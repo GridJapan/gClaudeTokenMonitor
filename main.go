@@ -234,7 +234,7 @@ func cmdRecord(args []string) error {
 	fs := flag.NewFlagSet("record", flag.ExitOnError)
 	dir := fs.String("dir", defaultProjectsDir(), "Claude Code の projects ディレクトリ")
 	out := fs.String("out", defaultRecordDir(), "アーカイブの保存先")
-	interval := fs.Duration("interval", 5*time.Second, "取り込み間隔（差分読みなので短くても軽い）")
+	interval := fs.Duration("interval", 200*time.Millisecond, "取り込み間隔（差分読み。変化が無い tick は Stat だけで終わる）")
 	quiet := fs.Bool("quiet", false, "何も表示しない（常駐サービス用）")
 	usage := fs.Duration("usage-interval", 5*time.Minute,
 		"プラン使用率を取得する間隔 (0 で無効。API 側が絞るので短くしすぎない)")

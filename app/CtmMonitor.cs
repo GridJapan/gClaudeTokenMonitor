@@ -180,9 +180,21 @@ static class Store
         return list;
     }
 
-    /// <summary>最新の 1 巡分（窓ごとに最後のサンプル）。</summary>
+    static long limitsSize = -1;
+    static List<Sample> limitsCache = new List<Sample>();
+
+    /// <summary>最新の 1 巡分（窓ごとに最後のサンプル）。
+    /// 5 分に 1 回しか増えないファイルなので、サイズが変わったときだけ読み直す。</summary>
     public static List<Sample> Latest()
     {
+        try
+        {
+            var fi = new FileInfo(LimitsPath(DateTime.Now));
+            long sz = fi.Exists ? fi.Length : 0;
+            if (sz == limitsSize) return limitsCache;
+            limitsSize = sz;
+        }
+        catch { }
         var all = LoadSamples(DateTime.Now);
         if (all.Count == 0) all = LoadSamples(DateTime.Now.AddDays(-1));
         var byKey = new Dictionary<string, Sample>();
@@ -191,6 +203,7 @@ static class Store
         var outp = new List<Sample>();
         foreach (var k in order) if (byKey.ContainsKey(k)) { outp.Add(byKey[k]); byKey.Remove(k); }
         outp.AddRange(byKey.Values);
+        limitsCache = outp;
         return outp;
     }
 
@@ -203,6 +216,61 @@ static class Store
     }
 
     public static DayTotal Today() { return Totals(DateTime.Now); }
+
+    // ---- 200ms ポーリング用の増分読み --------------------------------
+    // 全量パース（数 MB）を 5 回/秒やると CPU を無駄に食うので、
+    // 前回読んだバイト位置を覚えて追記分だけ集計する。
+    static long liveOff;
+    static DayTotal liveTot = new DayTotal();
+    static string liveDay = "";
+
+    public static DayTotal TodayLive()
+    {
+        string day = DateTime.Now.ToString("yyyy-MM-dd");
+        string path = EventsPath(DateTime.Now);
+        if (day != liveDay) { liveDay = day; liveOff = 0; liveTot = new DayTotal(); }
+        try
+        {
+            var fi = new FileInfo(path);
+            if (!fi.Exists) return liveTot;
+            if (fi.Length < liveOff) { liveOff = 0; liveTot = new DayTotal(); }  // 作り直された
+            if (fi.Length == liveOff) return liveTot;
+
+            byte[] buf;
+            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read,
+                       FileShare.ReadWrite | FileShare.Delete))
+            {
+                fs.Seek(liveOff, SeekOrigin.Begin);
+                buf = new byte[fs.Length - liveOff];
+                int off = 0;
+                while (off < buf.Length)
+                {
+                    int n = fs.Read(buf, off, buf.Length - off);
+                    if (n <= 0) break;
+                    off += n;
+                }
+            }
+            // 最後の改行までだけ処理する。書きかけの行は次回に持ち越す
+            int lastNL = -1;
+            for (int i = buf.Length - 1; i >= 0; i--)
+                if (buf[i] == (byte)'\n') { lastNL = i; break; }
+            if (lastNL < 0) return liveTot;
+
+            var text = Encoding.ASCII.GetString(buf, 0, lastNL + 1);
+            foreach (var line in text.Split('\n'))
+            {
+                if (line.Length < 3) continue;
+                liveTot.Messages++;
+                liveTot.Tokens += (long)Num(line, "total");
+                liveTot.Cost += Num(line, "cost_usd");
+                var sid = Str(line, "session");
+                if (sid.Length > 0) liveTot.Sessions.Add(sid);
+            }
+            liveOff += lastNL + 1;
+        }
+        catch { }
+        return liveTot;
+    }
 
     public static DayTotal Totals(DateTime day)
     {
@@ -384,7 +452,7 @@ class CompactForm : Form
         Icon = TrayApp.BuildIcon(Theme.Accent);
         MinimizeBox = true;
 
-        timer.Interval = 2000;   // Go の取り込みが 5 秒粒度なので、これで十分追随する
+        timer.Interval = 200;    // アーカイブ側も 200ms 周期。増分読みなので負荷は Stat 1 回分
         timer.Tick += delegate { Reload(); };
         timer.Start();
 
@@ -534,7 +602,7 @@ class CompactForm : Form
     public void Reload()
     {
         samples = Store.Latest();
-        var t = Store.Today();
+        var t = Store.TodayLive();
         long nt = t.Tokens;
         if (!primed)
         {
@@ -585,6 +653,25 @@ class CompactForm : Form
         }
         floats.Add(new object[] { "+" + Store.Tokens(delta), 1f });
         if (floats.Count > 4) floats.RemoveAt(0);
+
+        // 水も一緒に祝う: 中央がぼよんと跳ね、細波が立ち、水位が一瞬持ち上がる
+        chop = Math.Min(1.6f, chop + 0.10f + 0.08f * tier);
+        m2v -= 0.9f * tier;
+        bobVel -= 0.30f * tier;
+
+        // 水中から泡のキラキラが昇る（トークンが水に変わって注がれたイメージ）
+        int bn = 4 + tier * 5;
+        float wl = WaterLevel();
+        float depth = Math.Max(8, Height - wl - 14);
+        for (int i = 0; i < bn && parts.Count < 140; i++)
+            parts.Add(new float[] {
+                (float)(rng.NextDouble() * Width),
+                wl + 6 + (float)(rng.NextDouble() * depth),
+                0f,
+                (float)(-(0.4 + rng.NextDouble() * 0.9)),
+                0f, (float)(55 + rng.NextDouble() * 45),
+                (float)(1.6 + rng.NextDouble() * 1.9),
+                2f });                                   // type 2 = 泡キラ
     }
 
     void FxTick(object o, EventArgs e)
@@ -677,14 +764,27 @@ class CompactForm : Form
         {
             var pt = parts[i];
             pt[0] += pt[2]; pt[1] += pt[3]; pt[4] += 1f;
-            bool droplet = pt.Length > 7 && pt[7] >= 1f;
+            float ptype = pt.Length > 7 ? pt[7] : 0f;
+            bool droplet = ptype == 1f;
+            bool bubble = ptype >= 2f;
             if (droplet) pt[3] += 0.22f;          // しぶきは重力で放物線を描く
+            else if (bubble)
+            {
+                // 泡: 浮力で加速しつつ左右にゆらゆら
+                pt[3] = Math.Max(pt[3] - 0.045f, -2.0f);
+                pt[0] += (float)Math.Sin(pt[4] * 0.22 + i) * 0.4f;
+            }
             else { pt[2] *= 0.93f; pt[3] = pt[3] * 0.93f - 0.035f; }  // キラ星は減速して浮き上がる
             bool dead = pt[4] >= pt[5];
             if (droplet && pt[3] > 0f && pt[1] > surface + 3f)
             {
                 dead = true;                      // 着水。ごく小さく波を立てる
                 chop = Math.Min(1.6f, chop + 0.02f);
+            }
+            if (bubble && pt[1] < surface + 2f)
+            {
+                dead = true;                      // 水面に到達して弾ける
+                chop = Math.Min(1.6f, chop + 0.012f);
             }
             if (dead) parts.RemoveAt(i);
         }
@@ -930,13 +1030,27 @@ class CompactForm : Form
         {
             var pt = parts[i];
             float life = 1f - pt[4] / pt[5];
-            bool droplet = pt.Length > 7 && pt[7] >= 1f;
-            if (droplet)
+            float ptype = pt.Length > 7 ? pt[7] : 0f;
+            if (ptype == 1f)                       // しぶき
             {
                 int da = (int)(255 * life);
                 float dsz = pt[6] * (0.6f + 0.4f * life);
                 using (var b = new SolidBrush(Color.FromArgb(Math.Max(0, Math.Min(255, da)), 185, 220, 255)))
                     g.FillEllipse(b, pt[0] - dsz / 2, pt[1] - dsz / 2, dsz, dsz);
+                continue;
+            }
+            if (ptype >= 2f)                       // 泡キラ: 水中で明滅しながら昇る
+            {
+                float btw = 0.5f + 0.5f * (float)Math.Sin(pt[4] * 0.5 + i * 1.7);
+                int ba = (int)(220 * life * btw);
+                if (ba < 6) continue;
+                float bsz = pt[6];
+                using (var glow2 = new SolidBrush(Color.FromArgb(ba / 4, 140, 225, 255)))
+                    g.FillEllipse(glow2, pt[0] - bsz * 1.6f, pt[1] - bsz * 1.6f, bsz * 3.2f, bsz * 3.2f);
+                using (var b = new SolidBrush(Color.FromArgb(ba, 160, 230, 255)))
+                    g.FillEllipse(b, pt[0] - bsz / 2, pt[1] - bsz / 2, bsz, bsz);
+                using (var b = new SolidBrush(Color.FromArgb(Math.Min(255, ba + 30), 255, 255, 255)))
+                    g.FillEllipse(b, pt[0] - bsz * 0.2f, pt[1] - bsz * 0.2f, bsz * 0.4f, bsz * 0.4f);
                 continue;
             }
             // キラ星: 強くまたたく十字 + 中心のコア + うっすらグロー

@@ -41,6 +41,7 @@ type Recorder struct {
 	lockFile *os.File
 	lockIntv time.Duration
 	prunedOn int
+	lastBeat time.Time
 }
 
 type recState struct {
@@ -81,6 +82,7 @@ func NewRecorder(dir, root string) (*Recorder, error) {
 		}
 	}
 	r := &Recorder{Dir: dir, sc: NewScanner(root, time.Time{}), seen: map[string]int{}}
+	r.sc.PathTTL = 3 * time.Second // 発見は 3 秒ごと、追記チェックは毎 tick
 	r.loadState()
 	r.loadSeen()
 	return r, nil
@@ -385,30 +387,37 @@ func (r *Recorder) tick() (int, error) {
 		r.sc.offsets = before
 		return 0, err
 	}
-	sort.Slice(batch, func(i, j int) bool { return batch[i].TS.Before(batch[j].TS) })
-	for _, e := range batch {
-		if err := r.write(e); err != nil {
+	if len(batch) > 0 {
+		sort.Slice(batch, func(i, j int) bool { return batch[i].TS.Before(batch[j].TS) })
+		for _, e := range batch {
+			if err := r.write(e); err != nil {
+				r.sc.offsets = before
+				return 0, err
+			}
+		}
+		if err := r.flush(); err != nil {
 			r.sc.offsets = before
 			return 0, err
 		}
-	}
-	if err := r.flush(); err != nil {
-		r.sc.offsets = before
-		return 0, err
-	}
-	// Only now is the batch durable, so remember the keys and keep the offsets.
-	today := dayNum(time.Now().Format("2006-01-02"))
-	for _, k := range fresh {
-		if k != "" {
-			r.seen[k] = today
+		// Only now is the batch durable, so remember the keys and keep the offsets.
+		today := dayNum(time.Now().Format("2006-01-02"))
+		for _, k := range fresh {
+			if k != "" {
+				r.seen[k] = today
+			}
+		}
+		r.pruneSeen(today)
+		if err := r.saveState(); err != nil {
+			r.logf("saveState: %v", err)
 		}
 	}
-	r.pruneSeen(today)
-	if err := r.saveState(); err != nil {
-		r.logf("saveState: %v", err)
-	}
-	if err := r.touchLock(); err != nil {
-		r.logf("touchLock: %v", err)
+	// 変化の有無に関わらず、生存表明は 2 秒に 1 回だけ書く。
+	// 200ms 周期でロックを書き続けると無意味なディスク書き込みが 5 回/秒になる。
+	if time.Since(r.lastBeat) >= 2*time.Second {
+		if err := r.touchLock(); err != nil {
+			r.logf("touchLock: %v", err)
+		}
+		r.lastBeat = time.Now()
 	}
 	return len(batch), nil
 }

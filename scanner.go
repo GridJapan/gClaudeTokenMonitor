@@ -17,6 +17,13 @@ type Scanner struct {
 	offsets map[string]int64
 	Files   int
 	Bytes   int64
+
+	// PathTTL > 0 のとき、ディレクトリ走査の結果をこの時間キャッシュする。
+	// 200ms 周期の常駐では走査が支配的コストになるため、ファイル発見は
+	// 数秒に 1 回で十分（新セッションのログは開始から数秒で見つかればよい）。
+	PathTTL     time.Duration
+	pathCache   []string
+	pathCacheAt time.Time
 }
 
 func NewScanner(root string, since time.Time) *Scanner {
@@ -26,17 +33,7 @@ func NewScanner(root string, since time.Time) *Scanner {
 // Scan reads everything appended since the previous call and hands each new
 // entry to emit. It returns the number of entries emit accepted.
 func (s *Scanner) Scan(emit func(Entry, string) bool) (int, error) {
-	var paths []string
-	err := filepath.WalkDir(s.Root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil // unreadable dir: skip, keep going
-		}
-		if d.IsDir() || !strings.HasSuffix(d.Name(), ".jsonl") {
-			return nil
-		}
-		paths = append(paths, p)
-		return nil
-	})
+	paths, err := s.listPaths()
 	if err != nil {
 		return 0, err
 	}
@@ -99,6 +96,29 @@ func (s *Scanner) readFrom(path string, off int64, project string, emit func(Ent
 		}
 	}
 	return consumed, count, nil
+}
+
+// listPaths walks the tree, honoring the PathTTL cache.
+func (s *Scanner) listPaths() ([]string, error) {
+	if s.PathTTL > 0 && s.pathCache != nil && time.Since(s.pathCacheAt) < s.PathTTL {
+		return s.pathCache, nil
+	}
+	var paths []string
+	err := filepath.WalkDir(s.Root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // unreadable dir: skip, keep going
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".jsonl") {
+			return nil
+		}
+		paths = append(paths, p)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.pathCache, s.pathCacheAt = paths, time.Now()
+	return paths, nil
 }
 
 // projectFromPath falls back to the encoded directory name Claude Code uses,
