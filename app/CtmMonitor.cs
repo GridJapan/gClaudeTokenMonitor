@@ -217,6 +217,63 @@ static class Store
 
     public static DayTotal Today() { return Totals(DateTime.Now); }
 
+    /// <summary>選択中の期間の窓開始。Today は null。5h / week は公式リセット時刻
+    /// （limits サンプル）から逆算する。サンプル未取得なら null（= 今日扱い）。</summary>
+    public static DateTime PeriodStart(List<Sample> samples)
+    {
+        string key = PeriodMode == Period.Week ? "weekly_all" : "session";
+        double hours = PeriodMode == Period.Week ? 168 : 5;
+        foreach (var x in samples)
+        {
+            if (x.Key != key) continue;
+            DateTime t;
+            if (DateTime.TryParse(x.ResetsAt, null, DateTimeStyles.RoundtripKind, out t))
+                return t.ToLocalTime().AddHours(-hours);
+        }
+        // 公式リセット時刻が未取得の間は「直近の窓ぶん」で近似する
+        return DateTime.Now.AddHours(-hours);
+    }
+
+    // 過去日の行（ts, tok, cost）。日付をまたぐ窓の合計に使う。過去日のファイルは
+    // もう増えないので一度読めば十分（サイズ変化で再読）。
+    class DayRows { public long Size; public List<object[]> Rows = new List<object[]>(); }
+    static readonly Dictionary<string, DayRows> dayCache = new Dictionary<string, DayRows>();
+
+    static List<object[]> RowsFor(DateTime day)
+    {
+        string k = day.ToString("yyyy-MM-dd");
+        string path = EventsPath(day);
+        long size = 0;
+        try { var fi = new FileInfo(path); size = fi.Exists ? fi.Length : 0; } catch { }
+        DayRows c;
+        if (dayCache.TryGetValue(k, out c) && c.Size == size) return c.Rows;
+        c = new DayRows { Size = size };
+        foreach (var line in ReadLines(path))
+        {
+            DateTime ts;
+            if (!DateTime.TryParse(Str(line, "ts"), null, DateTimeStyles.RoundtripKind, out ts))
+                continue;
+            c.Rows.Add(new object[] { ts.ToLocalTime(), (long)Num(line, "total"), Num(line, "cost_usd") });
+        }
+        dayCache[k] = c;
+        return c.Rows;
+    }
+
+    /// <summary>start 以降の合計トークン / コスト。start の日から今日までを走る。</summary>
+    public static void SumSince(DateTime start, out long tok, out double cost)
+    {
+        tok = 0; cost = 0;
+        for (var day = start.Date; day <= DateTime.Now.Date; day = day.AddDays(1))
+        {
+            foreach (var r in RowsFor(day))
+            {
+                if ((DateTime)r[0] < start) continue;
+                tok += (long)r[1];
+                cost += (double)r[2];
+            }
+        }
+    }
+
     // ---- 200ms ポーリング用の増分読み --------------------------------
     // 全量パース（数 MB）を 5 回/秒やると CPU を無駄に食うので、
     // 前回読んだバイト位置を覚えて追記分だけ集計する。
@@ -454,6 +511,17 @@ static class Store
     /// ここに任意の倍率を足すだけで全ロジックが追従する。</summary>
     public static float WinScale = 1f;
 
+    /// <summary>Big レイアウトの数字が何の合計か。5h / week は公式リセット時刻の
+    /// 窓に一致するので、リセットの瞬間に数字も 0 から数え直しになる。</summary>
+    public enum Period { FiveH, Week }
+
+    public static Period PeriodMode = Period.FiveH;
+
+    public static string PeriodLabel
+    {
+        get { return PeriodMode == Period.Week ? "WEEK" : "5H"; }
+    }
+
     public static void LoadSettings()
     {
         try
@@ -469,6 +537,7 @@ static class Store
             if (x != 0 || y != 0) WindowPos = new Point(x, y);
             LayoutMode = Str(txt, "layout") == "Big" ? Layout.Big : Layout.Detail;
             WinScale = Str(txt, "size") == "S" ? 0.5f : 1f;
+            PeriodMode = Str(txt, "period") == "week" ? Period.Week : Period.FiveH;
         }
         catch { }
     }
@@ -480,9 +549,10 @@ static class Store
             Directory.CreateDirectory(Root);
             File.WriteAllText(SettingsPath, string.Format(
                 CultureInfo.InvariantCulture,
-                "{{\"unit\":\"{0}\",\"x\":{1},\"y\":{2},\"layout\":\"{3}\",\"size\":\"{4}\"}}",
+                "{{\"unit\":\"{0}\",\"x\":{1},\"y\":{2},\"layout\":\"{3}\",\"size\":\"{4}\",\"period\":\"{5}\"}}",
                 UnitName, WindowPos.X, WindowPos.Y, LayoutMode,
-                WinScale < 0.75f ? "S" : "L"));
+                WinScale < 0.75f ? "S" : "L",
+                PeriodMode == Period.Week ? "week" : "5h"));
         }
         catch { }
     }
@@ -633,6 +703,29 @@ class CompactForm : Form
         }
         menu.Items.Add(sizeMenu);
 
+        // 集計期間: 中央の数字が何の合計か。5h / week は公式リセットで 0 に戻る
+        var perMenu = new ToolStripMenuItem("集計期間");
+        var pers = new[] { Store.Period.FiveH, Store.Period.Week };
+        var pNames = new[] { "5h（5 時間制限の窓）", "week（週次の窓）" };
+        var pItems = new ToolStripMenuItem[pers.Length];
+        for (int i = 0; i < pers.Length; i++)
+        {
+            var pv = pers[i];
+            var mi = new ToolStripMenuItem(pNames[i]);
+            mi.Checked = Store.PeriodMode == pv;
+            mi.Click += delegate
+            {
+                Store.PeriodMode = pv;
+                Store.SaveSettings();
+                for (int k = 0; k < pItems.Length; k++) pItems[k].Checked = (pers[k] == pv);
+                periodSnap = true;   // 切替時は数字をスナップ（演出しない）
+                Reload();
+            };
+            pItems[i] = mi;
+            perMenu.DropDownItems.Add(mi);
+        }
+        menu.Items.Add(perMenu);
+
         // Windows 起動時に自動開始（このマシンでの自分の絶対パスで登録するので、
         // どこに clone しても動く。レコーダーはアプリが起動時に起こす）
         var autorun = new ToolStripMenuItem("Windows 起動時に開始");
@@ -770,11 +863,19 @@ class CompactForm : Form
         detail.BringToFront();
     }
 
+    double periodCost;      // Big の下段に出す、選択期間のコスト
+    bool periodSnap;        // 期間を切り替えた直後は演出せずスナップ
+
     public void Reload()
     {
         samples = Store.Latest();
         var t = Store.TodayLive();
-        long nt = t.Tokens;
+
+        // 選択期間（5h / week の窓）の合計。窓は公式リセット時刻に一致する
+        long nt; double nc;
+        Store.SumSince(Store.PeriodStart(samples), out nt, out nc);
+        periodCost = nc;
+        if (periodSnap) { periodSnap = false; primed = true; shown = target = nt; }
         if (!primed)
         {
             primed = true;
@@ -1193,7 +1294,7 @@ class CompactForm : Form
 
         using (var b = new SolidBrush(Theme.Mut))
         {
-            var t = "TODAY  " + Store.UnitName;
+            var t = Store.PeriodLabel + "  " + Store.UnitName;
             var sz = g.MeasureString(t, fT8);
             g.DrawString(t, fT8, b, (LW - sz.Width) / 2, 14);
         }
@@ -1378,7 +1479,7 @@ class CompactForm : Form
         g.Restore(st);
 
         // 下段: コストと使用率（変換の外 = 揺らさない）
-        DrawShadowed(g, Store.Money(today.Cost), fMid11, Theme.Fg, LH - 54);
+        DrawShadowed(g, Store.Money(periodCost), fMid11, Theme.Fg, LH - 54);
         // 凡例は水の色と対応させる: ● 5h = 青、● 週 = 紫
         {
             string t1 = string.Format(CultureInfo.InvariantCulture, "● 5h {0:0}%", sesPct);
