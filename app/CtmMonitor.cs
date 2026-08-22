@@ -580,7 +580,9 @@ class CompactForm : Form
     readonly Font fMid11 = new Font("Yu Gothic UI", 11f, FontStyle.Bold);
     readonly Font fHuge = new Font("Yu Gothic UI", 36f, FontStyle.Bold);
     Font fitFont;
+    Font fitFontR;                            // 同サイズのレギュラー（単位 M/K 用）
     int fitLen;
+    readonly Font fHugeR = new Font("Yu Gothic UI", 36f, FontStyle.Regular);
     float flash;                              // バースト直後に数字が金色に光る 0..1
     readonly Font fF13 = new Font("Yu Gothic UI", 13f, FontStyle.Bold);
 
@@ -898,6 +900,28 @@ class CompactForm : Form
             Color.FromArgb(130, 170, 210, 255));
     }
 
+    /// <summary>リセットまでの残り時間の割合 0..1。リセット直後 = 1、リセット時 = 0。</summary>
+    static double ResetFrac(string resetsAt, double windowHours)
+    {
+        DateTime t;
+        if (!DateTime.TryParse(resetsAt, null, DateTimeStyles.RoundtripKind, out t)) return -1;
+        double remain = (t.ToLocalTime() - DateTime.Now).TotalHours;
+        if (remain <= 0) return 0;
+        return Math.Min(1.0, remain / windowHours);
+    }
+
+    /// <summary>画面の縁に沿う細いプログレスバー。残りぶんだけ左から塗る。</summary>
+    void DrawEdgeBar(Graphics g, float y, double frac, Color c)
+    {
+        if (frac < 0) return;
+        using (var track = new SolidBrush(Color.FromArgb(55, c)))
+            g.FillRectangle(track, 1, y, Width - 2, 3);
+        float w = (float)((Width - 2) * frac);
+        if (w >= 1)
+            using (var fill = new SolidBrush(Color.FromArgb(230, c)))
+                g.FillRectangle(fill, 1, y, w, 3);
+    }
+
     void DrawSurfaceLine(Graphics g, float level, float amp, float k, double phase, Color c)
     {
         using (var pen = new Pen(c, 1.2f))
@@ -973,13 +997,34 @@ class CompactForm : Form
         if (fitFont == null || fitLen != tok.Length)
         {
             if (fitFont != null && fitFont != fHuge) fitFont.Dispose();
+            if (fitFontR != null && fitFontR != fHugeR) fitFontR.Dispose();
             var m = g.MeasureString(tok, fHuge);
-            fitFont = m.Width <= Width - 28 ? fHuge
-                : new Font("Yu Gothic UI", fHuge.Size * (Width - 28) / m.Width, FontStyle.Bold);
+            if (m.Width <= Width - 28)
+            {
+                fitFont = fHuge;
+                fitFontR = fHugeR;
+            }
+            else
+            {
+                float size = fHuge.Size * (Width - 28) / m.Width;
+                fitFont = new Font("Yu Gothic UI", size, FontStyle.Bold);
+                fitFontR = new Font("Yu Gothic UI", size, FontStyle.Regular);
+            }
             fitLen = tok.Length;
         }
         var tsz = g.MeasureString(tok, fitFont);
         float cx = Width / 2f, cy = Height / 2f - 8;
+
+        // 数字だけ太字、単位 (K/M/G) はレギュラーで軽く見せる
+        int sufAt = tok.Length;
+        while (sufAt > 0 && char.IsLetter(tok[sufAt - 1])) sufAt--;
+        string numPart = tok.Substring(0, sufAt);
+        string sufPart = tok.Substring(sufAt);
+        float wNum = g.MeasureString(numPart, fitFont).Width;
+        float kern = fitFont.Size * 0.34f;    // MeasureString の余白ぶん詰める
+        float wSuf = sufPart.Length > 0 ? g.MeasureString(sufPart, fitFontR).Width - kern : 0;
+        float x0 = cx - (wNum + wSuf) / 2;
+        float yTop = cy - tsz.Height / 2;
 
         var st = g.Save();
         float sc = 1f + punch;
@@ -991,7 +1036,11 @@ class CompactForm : Form
 
         // 本体（うっすら影を落として水と分離する）
         using (var b = new SolidBrush(Color.FromArgb(140, 0, 0, 0)))
-            g.DrawString(tok, fitFont, b, cx - tsz.Width / 2 + 1.5f, cy - tsz.Height / 2 + 1.5f);
+        {
+            g.DrawString(numPart, fitFont, b, x0 + 1.5f, yTop + 1.5f);
+            if (sufPart.Length > 0)
+                g.DrawString(sufPart, fitFontR, b, x0 + wNum - kern + 1.5f, yTop + 1.5f);
+        }
         // 数字の色は状態で変わる:
         //   平常 = 白 / 使用率 70% 以上 = 橙 / 90% 以上 = 赤（逼迫が一目で分かる）
         //   カウントアップ中 = ミント緑がかる（増えている最中だと分かる）
@@ -1001,7 +1050,11 @@ class CompactForm : Form
         numCol = Lerp(numCol, Color.FromArgb(150, 235, 170), counting * 0.8f);
         numCol = Lerp(numCol, Color.FromArgb(255, 224, 120), flash);
         using (var b = new SolidBrush(numCol))
-            g.DrawString(tok, fitFont, b, cx - tsz.Width / 2, cy - tsz.Height / 2);
+        {
+            g.DrawString(numPart, fitFont, b, x0, yTop);
+            if (sufPart.Length > 0)
+                g.DrawString(sufPart, fitFontR, b, x0 + wNum - kern, yTop);
+        }
 
         // シマー: ハイライト帯が数字の上を走る
         if (shimmerT >= 0f)
@@ -1021,7 +1074,9 @@ class CompactForm : Form
                     Color.FromArgb(a, 255, 255, 255), Color.FromArgb(0, 255, 255, 255) };
                 cb.Positions = new[] { 0f, 0.5f, 1f };
                 lg.InterpolationColors = cb;
-                g.DrawString(tok, fitFont, lg, cx - tsz.Width / 2, cy - tsz.Height / 2);
+                g.DrawString(numPart, fitFont, lg, x0, yTop);
+                if (sufPart.Length > 0)
+                    g.DrawString(sufPart, fitFontR, lg, x0 + wNum - kern, yTop);
             }
             g.Clip = clip;
         }
@@ -1124,6 +1179,17 @@ class CompactForm : Form
         if (!Store.RecorderAlive())
             using (var b = new SolidBrush(Theme.Bad))
                 g.DrawString("● 記録停止中", fT8, b, 10, 8);
+
+        // 縁のバー: 上端 = 5h リセットまでの残り（青）、下端 = 週（紫）。
+        // 水の色と同じ系統。リセット直後は満タン、時間経過で左から縮む。
+        double fS = -1, fW = -1;
+        foreach (var x in samples)
+        {
+            if (x.Key == "session") fS = ResetFrac(x.ResetsAt, 5.0);
+            if (x.Key == "weekly_all") fW = ResetFrac(x.ResetsAt, 168.0);
+        }
+        DrawEdgeBar(g, 2, fS, Color.FromArgb(120, 180, 255));
+        DrawEdgeBar(g, Height - 5, fW, Color.FromArgb(190, 160, 255));
     }
 
     static Color Lerp(Color a, Color b, float t)

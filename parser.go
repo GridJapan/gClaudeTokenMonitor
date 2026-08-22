@@ -28,6 +28,9 @@ type Entry struct {
 	Session string
 	Key     string // dedup key: message.id + requestId
 	Prompt  string // 直前の人間の指示の先頭 200 文字（スキャナが紐付ける）
+	Effort  string // 推論エフォート（行トップレベルの "effort"）
+	Speed   string // "standard" / fast モード
+	Think   int    // output_tokens_details.thinking_tokens（output の内数）
 	Usage
 	Cost  float64
 	Known bool // model price was found
@@ -43,11 +46,15 @@ type rawUsage struct {
 		E5m int `json:"ephemeral_5m_input_tokens"`
 		E1h int `json:"ephemeral_1h_input_tokens"`
 	} `json:"cache_creation"`
+	Details *struct {
+		Thinking int `json:"thinking_tokens"`
+	} `json:"output_tokens_details"`
 }
 
 type rawLine struct {
 	Type      string `json:"type"`
 	Timestamp string `json:"timestamp"`
+	Effort    string `json:"effort"`
 	SessionID string `json:"sessionId"`
 	CWD       string `json:"cwd"`
 	RequestID string `json:"requestId"`
@@ -170,9 +177,14 @@ func ParseLine(line []byte, fallbackProject string) (e Entry, key string, ok boo
 		Model:   normalizeModel(r.Message.Model),
 		Project: project,
 		Session: r.SessionID,
+		Effort:  r.Effort,
+		Speed:   u.Speed,
 		Usage:   usage,
 		Cost:    cost,
 		Known:   known,
+	}
+	if u.Details != nil {
+		e.Think = u.Details.Thinking
 	}
 
 	key = r.Message.ID + "|" + r.RequestID

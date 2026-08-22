@@ -65,6 +65,9 @@ type recEvent struct {
 	Total   int     `json:"total"`
 	Cost    float64 `json:"cost_usd"`
 	Priced  bool    `json:"priced"`
+	Model2  string  `json:"effort,omitempty"`          // 推論エフォート (high など)
+	Speed   string  `json:"speed,omitempty"`           // standard / fast
+	Think   int     `json:"thinking_tokens,omitempty"` // output の内数
 	// Prompt は必ず最後に置く。値に "total": のような文字列が入っても、
 	// 素朴な先頭一致パーサ（UI 側）が実フィールドを先に見つけられるように。
 	Prompt string `json:"prompt,omitempty"`
@@ -337,6 +340,7 @@ func (r *Recorder) write(e Entry) error {
 		Input: e.Input, CW5m: e.CacheWrite5m, CW1h: e.CacheWrite1h,
 		CRead: e.CacheRead, Output: e.Output, Total: e.Total(),
 		Cost: e.Cost, Priced: e.Known, Prompt: e.Prompt,
+		Model2: e.Effort, Speed: e.Speed, Think: e.Think,
 	}
 	b, err := json.Marshal(rec)
 	if err != nil {

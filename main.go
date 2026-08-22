@@ -539,6 +539,9 @@ type eventOut struct {
 	Total   int     `json:"total"`
 	Cost    float64 `json:"cost_usd"`
 	Priced  bool    `json:"priced"`
+	Effort  string  `json:"effort,omitempty"`
+	Speed   string  `json:"speed,omitempty"`
+	Think   int     `json:"thinking_tokens,omitempty"`
 	Prompt  string  `json:"prompt,omitempty"`
 }
 
@@ -562,6 +565,9 @@ func emitEvents(s *Store) {
 			Total:   e.Total(),
 			Cost:    e.Cost,
 			Priced:  e.Known,
+			Effort:  e.Effort,
+			Speed:   e.Speed,
+			Think:   e.Think,
 			Prompt:  e.Prompt,
 		})
 	}
