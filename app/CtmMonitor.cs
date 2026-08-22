@@ -219,19 +219,33 @@ static class Store
 
     /// <summary>選択中の期間の窓開始。Today は null。5h / week は公式リセット時刻
     /// （limits サンプル）から逆算する。サンプル未取得なら null（= 今日扱い）。</summary>
+    // リセット直後は API が resets_at を空で返す期間がある。最後に見えた
+    // 有効なリセット時刻を覚えておき、周期で現在の窓まで繰り上げて補完する。
+    static DateTime lastReset5h = DateTime.MinValue;
+    static DateTime lastResetWeek = DateTime.MinValue;
+
     public static DateTime PeriodStart(List<Sample> samples)
     {
-        string key = PeriodMode == Period.Week ? "weekly_all" : "session";
-        double hours = PeriodMode == Period.Week ? 168 : 5;
+        bool week = PeriodMode == Period.Week;
+        string key = week ? "weekly_all" : "session";
+        double hours = week ? 168 : 5;
         foreach (var x in samples)
         {
             if (x.Key != key) continue;
             DateTime t;
             if (DateTime.TryParse(x.ResetsAt, null, DateTimeStyles.RoundtripKind, out t))
-                return t.ToLocalTime().AddHours(-hours);
+            {
+                var loc = t.ToLocalTime();
+                if (week) lastResetWeek = loc; else lastReset5h = loc;
+            }
         }
-        // 公式リセット時刻が未取得の間は「直近の窓ぶん」で近似する
-        return DateTime.Now.AddHours(-hours);
+        var reset = week ? lastResetWeek : lastReset5h;
+        if (reset == DateTime.MinValue)
+            return DateTime.Now.AddHours(-hours);   // 一度も取れていない間の近似
+        // 覚えているリセット時刻を、現在を含む窓の終端まで周期で合わせる
+        while (reset <= DateTime.Now) reset = reset.AddHours(hours);
+        while (reset.AddHours(-hours) > DateTime.Now) reset = reset.AddHours(-hours);
+        return reset.AddHours(-hours);
     }
 
     // 過去日の行（ts, tok, cost）。日付をまたぐ窓の合計に使う。過去日のファイルは
