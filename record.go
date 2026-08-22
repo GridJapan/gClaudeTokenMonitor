@@ -55,6 +55,7 @@ type recEvent struct {
 	TS      string `json:"ts"`
 	Session string `json:"session"`
 	CWDName string `json:"cwd_name"`
+	CWD     string `json:"cwd,omitempty"` // フルパス
 	Model   string `json:"model"`
 	Effort  string `json:"effort,omitempty"` // 推論エフォート (high / max など)
 	Speed   string `json:"speed,omitempty"`  // standard / fast
@@ -339,7 +340,7 @@ func (r *Recorder) write(e Entry) error {
 	}
 	rec := recEvent{
 		TS: e.TS.Format(time.RFC3339), Key: e.Key, Session: e.Session,
-		CWDName: e.Project, Model: e.Model,
+		CWDName: e.Project, CWD: e.CWD, Model: e.Model,
 		Input: e.Input, CW5m: e.CacheWrite5m, CW1h: e.CacheWrite1h,
 		CRead: e.CacheRead, Output: e.Output, Total: e.Total(),
 		Cost: e.Cost, Priced: e.Known, Prompt: e.Prompt,

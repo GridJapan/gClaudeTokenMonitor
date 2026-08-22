@@ -24,7 +24,8 @@ func (u Usage) Total() int      { return u.Input + u.CacheWrite() + u.CacheRead 
 type Entry struct {
 	TS      time.Time
 	Model   string
-	Project string
+	Project string // cwd の末尾フォルダ名
+	CWD     string // cwd のフルパス
 	Session string
 	Key     string // dedup key: message.id + requestId
 	Prompt  string // 直前の人間の指示の先頭 200 文字（スキャナが紐付ける）
@@ -169,6 +170,7 @@ func ParseLine(line []byte, fallbackProject string) (e Entry, key string, ok boo
 	if r.CWD != "" {
 		project = filepath.Base(strings.ReplaceAll(r.CWD, `\`, `/`))
 	}
+	cwdFull := strings.ReplaceAll(r.CWD, `\`, `/`)
 
 	cost, known := Cost(r.Message.Model, u.Speed, usage)
 
@@ -176,6 +178,7 @@ func ParseLine(line []byte, fallbackProject string) (e Entry, key string, ok boo
 		TS:      ts.Local(),
 		Model:   normalizeModel(r.Message.Model),
 		Project: project,
+		CWD:     cwdFull,
 		Session: r.SessionID,
 		Effort:  r.Effort,
 		Speed:   u.Speed,

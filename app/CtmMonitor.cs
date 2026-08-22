@@ -1473,8 +1473,17 @@ class DetailForm : Form
         // 診断用: 公式使用率 % の 5 分毎スナップショット。いつ % が跳ねたかを突き合わせる
         var t2 = new TabPage("使用率の推移（5分毎）") { BackColor = Theme.Bg };
 
-        Setup(instrView, new[] { "開始", "所要", "セッション", "作業ディレクトリ", "応答", "トークン", "コスト", "指示（先頭200字）" },
-            new[] { 70, 60, 80, 130, 55, 110, 90, 420 });
+        Setup(instrView, new[] { "開始", "所要", "セッション", "作業ディレクトリ", "応答数", "トークン", "コスト", "指示（先頭200字）", "ディレクトリ（フルパス）" },
+            new[] { 70, 60, 80, 130, 60, 110, 90, 420, 280 });
+        // ダブルクリック（または Enter）で、その指示の応答内訳をモーダルで開く
+        instrView.ItemActivate += delegate
+        {
+            if (instrView.SelectedItems.Count == 0) return;
+            var tag = instrView.SelectedItems[0].Tag as object[];
+            if (tag == null) return;
+            using (var dlg = new InstrDetailForm(tag))
+                dlg.ShowDialog(this);
+        };
         Setup(eventsView, new[] { "時刻", "セッション", "作業ディレクトリ", "モデル", "cache-read", "output", "合計", "コスト", "指示（先頭200字）" },
             new[] { 80, 80, 140, 130, 100, 80, 100, 90, 380 });
         Setup(limitsView, new[] { "時刻", "窓", "使用率", "リセットまで", "実測メッセージ", "実測トークン", "実測コスト" },
@@ -1560,19 +1569,23 @@ class DetailForm : Form
             n++;
             string ses = FieldStr(line, "session");
             string cwd = FieldStr(line, "cwd_name");
+            string cwdFull = FieldStr(line, "cwd");
             string pr = FieldStr(line, "prompt");
             DateTime ts;
             DateTime.TryParse(FieldStr(line, "ts"), null,
                 System.Globalization.DateTimeStyles.RoundtripKind, out ts);
             long tok = (long)FieldNum(line, "total");
             double cost = FieldNum(line, "cost_usd");
+            string model = FieldStr(line, "model");
+            long cread = (long)FieldNum(line, "cache_read");
+            long outp = (long)FieldNum(line, "output");
 
             var it = new ListViewItem(Field(line, "ts", 11, 8));
             it.SubItems.Add(Cut(ses, 8));
             it.SubItems.Add(cwd);
-            it.SubItems.Add(FieldStr(line, "model"));
-            it.SubItems.Add(((long)FieldNum(line, "cache_read")).ToString("N0"));
-            it.SubItems.Add(((long)FieldNum(line, "output")).ToString("N0"));
+            it.SubItems.Add(model);
+            it.SubItems.Add(cread.ToString("N0"));
+            it.SubItems.Add(outp.ToString("N0"));
             it.SubItems.Add(tok.ToString("N0"));
             it.SubItems.Add(Store.Money(cost));
             it.SubItems.Add(pr);
@@ -1581,13 +1594,23 @@ class DetailForm : Form
             // 指示ごと: 同じセッションで同じ指示が続く区間を 1 行に畳む
             if (cur == null || (string)cur[0] != ses || (string)cur[2] != pr)
             {
-                cur = new object[] { ses, cwd, pr, ts, ts, 0, 0L, 0.0 };
+                cur = new object[] { ses, cwd, pr, ts, ts, 0, 0L, 0.0,
+                    new List<object[]>(), cwdFull };
                 groups.Add(cur);
             }
             cur[4] = ts;
             cur[5] = (int)cur[5] + 1;
             cur[6] = (long)cur[6] + tok;
             cur[7] = (double)cur[7] + cost;
+            // モーダル用: 応答 1 件ぶんの完全な内訳
+            ((List<object[]>)cur[8]).Add(new object[] {
+                ts, model,
+                (long)FieldNum(line, "input"),
+                (long)FieldNum(line, "cache_write_5m"),
+                (long)FieldNum(line, "cache_write_1h"),
+                cread, outp,
+                (long)FieldNum(line, "thinking_tokens"),
+                tok, cost });
         }
         eventsView.EndUpdate();
 
@@ -1610,7 +1633,9 @@ class DetailForm : Form
             it.SubItems.Add(Store.Money((double)gr[7]));
             var pr2 = (string)gr[2];
             it.SubItems.Add(pr2.Length > 0 ? pr2 : "（指示の記録なし）");
+            it.SubItems.Add((string)gr[9]);
             if (pr2.Length == 0) it.ForeColor = Theme.Mut;
+            it.Tag = gr;
             instrView.Items.Add(it);
         }
         instrView.EndUpdate();
@@ -1677,6 +1702,109 @@ class DetailForm : Form
     {
         var s = FieldStr(line, key);
         return s.Length >= off + len ? s.Substring(off, len) : s;
+    }
+}
+
+/// <summary>指示 1 つの応答内訳を出すモーダル。1 行 = 課金応答 1 件、下段に合計。</summary>
+class InstrDetailForm : Form
+{
+    public InstrDetailForm(object[] gr)
+    {
+        string prompt = (string)gr[2];
+        var t0 = (DateTime)gr[3];
+        var t1 = (DateTime)gr[4];
+        var rows = (List<object[]>)gr[8];
+
+        Text = "指示の内訳";
+        Size = new Size(980, 560);
+        StartPosition = FormStartPosition.CenterParent;
+        BackColor = Theme.Bg;
+        ForeColor = Theme.Fg;
+        Font = new Font("Yu Gothic UI", 9f);
+        MinimizeBox = false;
+        KeyPreview = true;
+        KeyDown += delegate (object o, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Escape) Close();
+        };
+
+        // 上段: 指示の全文（記録している先頭 200 字）
+        var head = new Label
+        {
+            Dock = DockStyle.Top,
+            Height = 64,
+            Padding = new Padding(12, 8, 12, 4),
+            Text = prompt.Length > 0 ? prompt : "（指示の記録なし）",
+            ForeColor = prompt.Length > 0 ? Theme.Fg : Theme.Mut,
+        };
+        var sub = new Label
+        {
+            Dock = DockStyle.Top,
+            Height = 22,
+            Padding = new Padding(12, 0, 12, 0),
+            ForeColor = Theme.Mut,
+            Text = string.Format("セッション {0}   {1} → {2}   {3}",
+                ((string)gr[0]).Length >= 8 ? ((string)gr[0]).Substring(0, 8) : (string)gr[0],
+                t0.ToString("HH:mm:ss"), t1.ToString("HH:mm:ss"),
+                gr.Length > 9 ? (string)gr[9] : ""),
+        };
+
+        var list = new ListView
+        {
+            Dock = DockStyle.Fill,
+            View = View.Details,
+            FullRowSelect = true,
+            BackColor = Theme.Card,
+            ForeColor = Theme.Fg,
+            BorderStyle = BorderStyle.None,
+        };
+        string[] cols = { "#", "時刻", "モデル", "input", "cache-w 5m", "cache-w 1h",
+                          "cache-read", "output", "(思考)", "合計", "コスト" };
+        int[] ws = { 36, 70, 130, 60, 84, 84, 100, 76, 66, 100, 84 };
+        for (int i = 0; i < cols.Length; i++) list.Columns.Add(cols[i], ws[i]);
+
+        long tIn = 0, tC5 = 0, tC1 = 0, tCr = 0, tOut = 0, tTh = 0, tTok = 0;
+        double tCost = 0;
+        int n = 0;
+        foreach (var r in rows)
+        {
+            n++;
+            var it = new ListViewItem(n.ToString());
+            it.SubItems.Add(((DateTime)r[0]).ToString("HH:mm:ss"));
+            it.SubItems.Add((string)r[1]);
+            it.SubItems.Add(((long)r[2]).ToString("N0"));
+            it.SubItems.Add(((long)r[3]).ToString("N0"));
+            it.SubItems.Add(((long)r[4]).ToString("N0"));
+            it.SubItems.Add(((long)r[5]).ToString("N0"));
+            it.SubItems.Add(((long)r[6]).ToString("N0"));
+            it.SubItems.Add(((long)r[7]).ToString("N0"));
+            it.SubItems.Add(((long)r[8]).ToString("N0"));
+            it.SubItems.Add(Store.Money((double)r[9]));
+            list.Items.Add(it);
+            tIn += (long)r[2]; tC5 += (long)r[3]; tC1 += (long)r[4];
+            tCr += (long)r[5]; tOut += (long)r[6]; tTh += (long)r[7];
+            tTok += (long)r[8]; tCost += (double)r[9];
+        }
+
+        // 下段: 合計
+        var foot = new Label
+        {
+            Dock = DockStyle.Bottom,
+            Height = 54,
+            Padding = new Padding(12, 6, 12, 6),
+            Font = new Font("Yu Gothic UI", 9.5f, FontStyle.Bold),
+            ForeColor = Theme.Fg,
+            Text = string.Format(
+                "合計  応答 {0} ／ {1} tok ／ {2}\r\n" +
+                "内訳  in {3:N0} ・ cache-w5m {4:N0} ・ cache-w1h {5:N0} ・ cache-r {6:N0} ・ out {7:N0}（思考 {8:N0}）",
+                n, tTok.ToString("N0"), Store.Money(tCost),
+                tIn, tC5, tC1, tCr, tOut, tTh),
+        };
+
+        Controls.Add(list);
+        Controls.Add(foot);
+        Controls.Add(sub);
+        Controls.Add(head);
     }
 }
 

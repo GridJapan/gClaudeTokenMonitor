@@ -530,6 +530,7 @@ type eventOut struct {
 	Key     string  `json:"key"`
 	Session string  `json:"session"`
 	Project string  `json:"project"`
+	CWD     string  `json:"cwd,omitempty"`
 	Model   string  `json:"model"`
 	Input   int     `json:"input"`
 	CW5m    int     `json:"cache_write_5m"`
@@ -556,6 +557,7 @@ func emitEvents(s *Store) {
 			Key:     e.Key,
 			Session: e.Session,
 			Project: e.Project,
+			CWD:     e.CWD,
 			Model:   e.Model,
 			Input:   e.Input,
 			CW5m:    e.CacheWrite5m,
