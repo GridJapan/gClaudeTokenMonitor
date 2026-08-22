@@ -1254,20 +1254,20 @@ class CompactForm : Form
         {
             string t1 = string.Format(CultureInfo.InvariantCulture, "● 5h {0:0}%", sesPct);
             string t2 = string.Format(CultureInfo.InvariantCulture, "● week {0:0}%", wkPct);
-            var s1 = g.MeasureString(t1, fT8);
-            var s2 = g.MeasureString(t2, fT8);
+            var s1 = g.MeasureString(t1, fT9b);
+            var s2 = g.MeasureString(t2, fT9b);
             float total = s1.Width + 10 + s2.Width;
             float lx = (LW - total) / 2;
             float ly = LH - 32;
             using (var sh = new SolidBrush(Color.FromArgb(170, 0, 0, 0)))
             {
-                g.DrawString(t1, fT8, sh, lx + 1, ly + 1);
-                g.DrawString(t2, fT8, sh, lx + s1.Width + 10 + 1, ly + 1);
+                g.DrawString(t1, fT9b, sh, lx + 1, ly + 1);
+                g.DrawString(t2, fT9b, sh, lx + s1.Width + 10 + 1, ly + 1);
             }
             using (var b = new SolidBrush(Color.FromArgb(235, 140, 190, 255)))
-                g.DrawString(t1, fT8, b, lx, ly);
+                g.DrawString(t1, fT9b, b, lx, ly);
             using (var b = new SolidBrush(Color.FromArgb(235, 190, 160, 255)))
-                g.DrawString(t2, fT8, b, lx + s1.Width + 10, ly);
+                g.DrawString(t2, fT9b, b, lx + s1.Width + 10, ly);
         }
 
         if (!Store.RecorderAlive())
