@@ -313,7 +313,7 @@ GET https://api.anthropic.com/api/oauth/usage
 
 ## 料金表
 
-USD / 100 万トークン（Anthropic のリスト価格）。キャッシュはこの input レートに対して
+USD / 100 万トークン（Anthropic のリスト価格）。**全数値の出典と引用日は [docs/料金根拠.md](docs/料金根拠.md) に明記**。キャッシュはこの input レートに対して
 read = 0.1x、write(5m) = 1.25x、write(1h) = 2.0x を掛ける。
 
 | モデル | input | output |
@@ -323,7 +323,8 @@ read = 0.1x、write(5m) = 1.25x、write(1h) = 2.0x を掛ける。
 | claude-opus-5 (fast mode) | $10 | $50 |
 | claude-opus-4-8 / 4-7 / 4-6 / 4-5 | $5 | $25 |
 | claude-opus-4-1 / 4-0 / claude-3-opus | $15 | $75 |
-| claude-sonnet-5 / 4-6 / 4-5 / 4-0 | $3 | $15 |
+| claude-sonnet-5 | $2 | $10 |
+| claude-sonnet-4-6 / 4-5 / 4-0 | $3 | $15 |
 | claude-haiku-4-5 | $1 | $5 |
 | claude-3-5-haiku | $0.80 | $4 |
 | claude-3-haiku | $0.25 | $1.25 |

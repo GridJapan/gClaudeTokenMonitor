@@ -41,7 +41,7 @@ var prices = map[string]Price{
 	"claude-3-opus":        {15, 75},
 
 	// Sonnet
-	"claude-sonnet-5":   {3, 15},
+	"claude-sonnet-5":   {2, 10}, // 導入価格 $2/$10 が恒久化（値上げ撤回、公式 2026-08-22 確認）
 	"claude-sonnet-4-6": {3, 15},
 	"claude-sonnet-4-5": {3, 15},
 	"claude-sonnet-4-0": {3, 15},
