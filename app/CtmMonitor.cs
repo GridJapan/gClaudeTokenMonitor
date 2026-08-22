@@ -1418,6 +1418,7 @@ class CompactForm : Form
 class DetailForm : Form
 {
     readonly ComboBox dayBox = new ComboBox();
+    readonly ListView instrView = new ListView();
     readonly ListView limitsView = new ListView();
     readonly ListView eventsView = new ListView();
     readonly Label summary = new Label();
@@ -1464,16 +1465,24 @@ class DetailForm : Form
         top.Controls.Add(open);
 
         var tabs = new TabControl { Dock = DockStyle.Fill };
-        var t1 = new TabPage("プラン使用制限の推移") { BackColor = Theme.Bg };
-        var t2 = new TabPage("メッセージ明細") { BackColor = Theme.Bg };
+        // メインは「指示ごと」: 1 行 = 人間の指示 1 つ。この指示にいくらかかったか。
+        var t0 = new TabPage("指示ごと") { BackColor = Theme.Bg };
+        // ドリルダウン用: 1 行 = 課金単位 1 応答（1 指示から数十行生まれる）
+        var t1 = new TabPage("メッセージ（課金単位）") { BackColor = Theme.Bg };
+        // 診断用: 公式使用率 % の 5 分毎スナップショット。いつ % が跳ねたかを突き合わせる
+        var t2 = new TabPage("使用率の推移（5分毎）") { BackColor = Theme.Bg };
 
-        Setup(limitsView, new[] { "時刻", "窓", "使用率", "リセットまで", "実測メッセージ", "実測トークン", "実測コスト" },
-            new[] { 90, 150, 80, 110, 120, 140, 110 });
+        Setup(instrView, new[] { "開始", "所要", "セッション", "作業ディレクトリ", "応答", "トークン", "コスト", "指示（先頭200字）" },
+            new[] { 70, 60, 80, 130, 55, 110, 90, 420 });
         Setup(eventsView, new[] { "時刻", "セッション", "作業ディレクトリ", "モデル", "cache-read", "output", "合計", "コスト", "指示（先頭200字）" },
             new[] { 80, 80, 140, 130, 100, 80, 100, 90, 380 });
+        Setup(limitsView, new[] { "時刻", "窓", "使用率", "リセットまで", "実測メッセージ", "実測トークン", "実測コスト" },
+            new[] { 90, 150, 80, 110, 120, 140, 110 });
 
-        t1.Controls.Add(limitsView);
-        t2.Controls.Add(eventsView);
+        t0.Controls.Add(instrView);
+        t1.Controls.Add(eventsView);
+        t2.Controls.Add(limitsView);
+        tabs.TabPages.Add(t0);
         tabs.TabPages.Add(t1);
         tabs.TabPages.Add(t2);
 
@@ -1542,22 +1551,68 @@ class DetailForm : Form
         eventsView.Items.Clear();
         var t = Store.Totals(day);
         int n = 0;
+        var groups = new List<object[]>();   // [ses,cwd,prompt,t0,t1,n,tok,cost]
+        object[] cur = null;
         foreach (var line in Store.ReadLines(Store.EventsPath(day)))
         {
             if (line.Length < 3) continue;
             n++;
+            string ses = FieldStr(line, "session");
+            string cwd = FieldStr(line, "cwd_name");
+            string pr = FieldStr(line, "prompt");
+            DateTime ts;
+            DateTime.TryParse(FieldStr(line, "ts"), null,
+                System.Globalization.DateTimeStyles.RoundtripKind, out ts);
+            long tok = (long)FieldNum(line, "total");
+            double cost = FieldNum(line, "cost_usd");
+
             var it = new ListViewItem(Field(line, "ts", 11, 8));
-            it.SubItems.Add(Cut(FieldStr(line, "session"), 8));
-            it.SubItems.Add(FieldStr(line, "cwd_name"));
+            it.SubItems.Add(Cut(ses, 8));
+            it.SubItems.Add(cwd);
             it.SubItems.Add(FieldStr(line, "model"));
             it.SubItems.Add(((long)FieldNum(line, "cache_read")).ToString("N0"));
             it.SubItems.Add(((long)FieldNum(line, "output")).ToString("N0"));
-            it.SubItems.Add(((long)FieldNum(line, "total")).ToString("N0"));
-            it.SubItems.Add(Store.Money(FieldNum(line, "cost_usd")));
-            it.SubItems.Add(FieldStr(line, "prompt"));
+            it.SubItems.Add(tok.ToString("N0"));
+            it.SubItems.Add(Store.Money(cost));
+            it.SubItems.Add(pr);
             eventsView.Items.Add(it);
+
+            // 指示ごと: 同じセッションで同じ指示が続く区間を 1 行に畳む
+            if (cur == null || (string)cur[0] != ses || (string)cur[2] != pr)
+            {
+                cur = new object[] { ses, cwd, pr, ts, ts, 0, 0L, 0.0 };
+                groups.Add(cur);
+            }
+            cur[4] = ts;
+            cur[5] = (int)cur[5] + 1;
+            cur[6] = (long)cur[6] + tok;
+            cur[7] = (double)cur[7] + cost;
         }
         eventsView.EndUpdate();
+
+        instrView.BeginUpdate();
+        instrView.Items.Clear();
+        for (int gi = groups.Count - 1; gi >= 0; gi--)   // 新しい指示を上に
+        {
+            var gr = groups[gi];
+            var t0g = (DateTime)gr[3];
+            var t1g = (DateTime)gr[4];
+            var durS = (t1g - t0g).TotalSeconds;
+            string dur = durS >= 60 ? string.Format("{0:0}m{1:00}s", (int)(durS / 60), (int)durS % 60)
+                                    : string.Format("{0:0}s", durS);
+            var it = new ListViewItem(t0g.ToString("HH:mm:ss"));
+            it.SubItems.Add(dur);
+            it.SubItems.Add(Cut((string)gr[0], 8));
+            it.SubItems.Add((string)gr[1]);
+            it.SubItems.Add(((int)gr[5]).ToString());
+            it.SubItems.Add(((long)gr[6]).ToString("N0"));
+            it.SubItems.Add(Store.Money((double)gr[7]));
+            var pr2 = (string)gr[2];
+            it.SubItems.Add(pr2.Length > 0 ? pr2 : "（指示の記録なし）");
+            if (pr2.Length == 0) it.ForeColor = Theme.Mut;
+            instrView.Items.Add(it);
+        }
+        instrView.EndUpdate();
 
         summary.Text = string.Format("{0}   {1} メッセージ / {2} トークン / {3} / {4} セッション",
             day.ToString("yyyy-MM-dd"), t.Messages.ToString("N0"),
