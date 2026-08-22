@@ -1690,8 +1690,10 @@ class DetailForm : Form
         eventsView.Items.Clear();
         var t = Store.Totals(day);
         int n = 0;
-        var groups = new List<object[]>();   // [ses,cwd,prompt,t0,t1,n,tok,cost]
-        object[] cur = null;
+        var groups = new List<object[]>();   // [ses,cwd,prompt,t0,t1,n,tok,cost,rows,cwdFull]
+        // セッションごとに現在のグループを追う。並行セッションの行はアーカイブ上で
+        // 交互に並ぶため、直前行との比較だと同じ指示が何個にも分断されてしまう
+        var curBy = new Dictionary<string, object[]>();
         foreach (var line in Store.ReadLines(Store.EventsPath(day)))
         {
             if (line.Length < 3) continue;
@@ -1720,11 +1722,13 @@ class DetailForm : Form
             it.SubItems.Add(pr);
             eventsView.Items.Add(it);
 
-            // 指示ごと: 同じセッションで同じ指示が続く区間を 1 行に畳む
-            if (cur == null || (string)cur[0] != ses || (string)cur[2] != pr)
+            // 指示ごと: そのセッションの中で指示が変わったときだけ新グループ
+            object[] cur;
+            if (!curBy.TryGetValue(ses, out cur) || (string)cur[2] != pr)
             {
                 cur = new object[] { ses, cwd, pr, ts, ts, 0, 0L, 0.0,
                     new List<object[]>(), cwdFull };
+                curBy[ses] = cur;
                 groups.Add(cur);
             }
             cur[4] = ts;
@@ -1745,7 +1749,11 @@ class DetailForm : Form
 
         instrView.BeginUpdate();
         instrView.Items.Clear();
-        for (int gi = groups.Count - 1; gi >= 0; gi--)   // 新しい指示を上に
+        groups.Sort(delegate (object[] x, object[] y)   // 新しい指示を上に
+        {
+            return ((DateTime)y[3]).CompareTo((DateTime)x[3]);
+        });
+        for (int gi = 0; gi < groups.Count; gi++)
         {
             var gr = groups[gi];
             var t0g = (DateTime)gr[3];
