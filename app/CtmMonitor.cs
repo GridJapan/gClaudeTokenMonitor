@@ -360,6 +360,11 @@ static class Store
 
     public static Layout LayoutMode = Layout.Detail;
 
+    /// <summary>ウィンドウ倍率。1.0 = 大 (240px)、0.5 = 小 (120px)。
+    /// 描画は常に論理 240x240 で行い、ScaleTransform で縮尺するので、
+    /// ここに任意の倍率を足すだけで全ロジックが追従する。</summary>
+    public static float WinScale = 1f;
+
     public static void LoadSettings()
     {
         try
@@ -374,6 +379,7 @@ static class Store
             int x = (int)Num(txt, "x"), y = (int)Num(txt, "y");
             if (x != 0 || y != 0) WindowPos = new Point(x, y);
             LayoutMode = Str(txt, "layout") == "Big" ? Layout.Big : Layout.Detail;
+            WinScale = Str(txt, "size") == "S" ? 0.5f : 1f;
         }
         catch { }
     }
@@ -385,8 +391,9 @@ static class Store
             Directory.CreateDirectory(Root);
             File.WriteAllText(SettingsPath, string.Format(
                 CultureInfo.InvariantCulture,
-                "{{\"unit\":\"{0}\",\"x\":{1},\"y\":{2},\"layout\":\"{3}\"}}",
-                UnitName, WindowPos.X, WindowPos.Y, LayoutMode));
+                "{{\"unit\":\"{0}\",\"x\":{1},\"y\":{2},\"layout\":\"{3}\",\"size\":\"{4}\"}}",
+                UnitName, WindowPos.X, WindowPos.Y, LayoutMode,
+                WinScale < 0.75f ? "S" : "L"));
         }
         catch { }
     }
@@ -446,7 +453,7 @@ class CompactForm : Form
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = true;
         StartPosition = FormStartPosition.Manual;
-        Size = new Size(240, 240);          // 正方形
+        ApplySize();                        // 正方形（大 240 / 小 120）
         BackColor = Theme.Bg;
         DoubleBuffered = true;
         Icon = TrayApp.BuildIcon(Theme.Accent);
@@ -513,6 +520,29 @@ class CompactForm : Form
             unitMenu.DropDownItems.Add(mi);
         }
         menu.Items.Add(unitMenu);
+
+        // ウィンドウサイズ: チェック式。大 = 240px、小 = ちょうど半分の 120px
+        var sizeMenu = new ToolStripMenuItem("ウィンドウサイズ");
+        var scales = new[] { 1f, 0.5f };
+        var sNames = new[] { "大", "小" };
+        var sItems = new ToolStripMenuItem[scales.Length];
+        for (int i = 0; i < scales.Length; i++)
+        {
+            var sc2 = scales[i];
+            var mi = new ToolStripMenuItem(sNames[i]);
+            mi.Checked = Math.Abs(Store.WinScale - sc2) < 0.01f;
+            mi.Click += delegate
+            {
+                Store.WinScale = sc2;
+                Store.SaveSettings();
+                for (int k = 0; k < sItems.Length; k++)
+                    sItems[k].Checked = Math.Abs(scales[k] - sc2) < 0.01f;
+                ApplySize();
+            };
+            sItems[i] = mi;
+            sizeMenu.DropDownItems.Add(mi);
+        }
+        menu.Items.Add(sizeMenu);
         var top = new ToolStripMenuItem("最前面に固定");
         top.Click += delegate { TopMost = !TopMost; top.Checked = TopMost; };
         menu.Items.Add(top);
@@ -546,6 +576,17 @@ class CompactForm : Form
     }
 
     DetailForm detail;
+
+    // 描画は常にこの論理サイズで行い、OnPaint 冒頭の ScaleTransform で
+    // 実ウィンドウサイズへ縮尺する。サイズ追加は Store.WinScale だけでよい。
+    const int LW = 240;
+    const int LH = 240;
+
+    public void ApplySize()
+    {
+        Size = new Size((int)(LW * Store.WinScale), (int)(LH * Store.WinScale));
+        Invalidate();
+    }
 
     // ---- Big レイアウトの演出状態 --------------------------------------
     readonly Timer fx = new Timer();          // 33ms ≒ 30fps。Big 表示中だけ動かす
@@ -640,7 +681,7 @@ class CompactForm : Form
         // キラ星は数字の縁のリングから外向きに弾ける。数字の真上に湧かせると
         // 白地に白で見えないので、外周に出してから減速させる
         int pn = tier == 1 ? 5 : tier == 2 ? 12 : tier == 3 ? 22 : 34;
-        float cx0 = Width / 2f, cy0 = Height / 2f - 8;
+        float cx0 = LW / 2f, cy0 = LH / 2f - 8;
         for (int i = 0; i < pn; i++)
         {
             double ang = rng.NextDouble() * Math.PI * 2;
@@ -668,10 +709,10 @@ class CompactForm : Form
         // 水中から泡のキラキラが昇る（トークンが水に変わって注がれたイメージ）
         int bn = 4 + tier * 5;
         float wl = WaterLevel();
-        float depth = Math.Max(8, Height - wl - 14);
+        float depth = Math.Max(8, LH - wl - 14);
         for (int i = 0; i < bn && parts.Count < 140; i++)
             parts.Add(new float[] {
-                (float)(rng.NextDouble() * Width),
+                (float)(rng.NextDouble() * LW),
                 wl + 6 + (float)(rng.NextDouble() * depth),
                 0f,
                 (float)(-(0.4 + rng.NextDouble() * 0.9)),
@@ -686,7 +727,7 @@ class CompactForm : Form
     {
         for (int i = 0; i < n && parts.Count < 140; i++)
             parts.Add(new float[] {
-                (float)(rng.NextDouble() * Width),          // x
+                (float)(rng.NextDouble() * LW),          // x
                 -(float)(rng.NextDouble() * 2.5),           // 水面からの浮き（y ではない）
                 (float)((rng.NextDouble() - 0.5) * 0.5),    // ゆっくり横に流れる
                 0f,
@@ -770,7 +811,7 @@ class CompactForm : Form
             int n = Math.Min(12, (int)(jolt * 0.6f));
             for (int i = 0; i < n; i++)
             {
-                float sx = (float)(rng.NextDouble() * Width);
+                float sx = (float)(rng.NextDouble() * LW);
                 parts.Add(new float[] {
                     sx, wl - 2f,
                     (float)(rng.NextDouble() * 2.4 - 1.2) + winVX * 0.12f,
@@ -895,8 +936,8 @@ class CompactForm : Form
     /// <summary>水槽の背景。5 時間制限の使用率が水位になり、水面が揺れる。</summary>
     float LevelFor(double pct)
     {
-        float level = (float)(Height * (1.0 - Math.Min(pct, 100) / 100.0));
-        return Math.Max(16, Math.Min(Height - 10, level));
+        float level = (float)(LH * (1.0 - Math.Min(pct, 100) / 100.0));
+        return Math.Max(16, Math.Min(LH - 10, level));
     }
 
     /// <summary>手前の水面（5h）。泡・しぶきの基準はこちら。</summary>
@@ -951,8 +992,8 @@ class CompactForm : Form
     {
         if (frac < 0) return;
         using (var track = new SolidBrush(Color.FromArgb(55, c)))
-            g.FillRectangle(track, 1, y, Width - 2, 3);
-        float w = (float)((Width - 2) * frac);
+            g.FillRectangle(track, 1, y, LW - 2, 3);
+        float w = (float)((LW - 2) * frac);
         if (w >= 1)
             using (var fill = new SolidBrush(Color.FromArgb(230, c)))
                 g.FillRectangle(fill, 1, y, w, 3);
@@ -965,7 +1006,7 @@ class CompactForm : Form
             var prev2 = g.SmoothingMode;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             float px = 0, py = SurfaceY(level, 0, amp, k, phase);
-            for (int x2 = 4; x2 <= Width; x2 += 4)
+            for (int x2 = 4; x2 <= LW; x2 += 4)
             {
                 float y2 = SurfaceY(level, x2, amp, k, phase);
                 g.DrawLine(pen, px, py, x2, y2);
@@ -977,7 +1018,7 @@ class CompactForm : Form
 
     float SurfaceY(float level, float x, float amp, float k, double phase)
     {
-        float u = x / Width;                       // 0..1
+        float u = x / LW;                       // 0..1
         float a = amp * (1f + chop * 1.8f);
         return level + bob
             + m1 * (float)Math.Cos(Math.PI * u)          // 片側に寄る（曲面）
@@ -991,14 +1032,14 @@ class CompactForm : Form
         Color top, Color bottom)
     {
         var pts = new List<PointF>();
-        for (int x = 0; x <= Width; x += 6)
+        for (int x = 0; x <= LW; x += 6)
             pts.Add(new PointF(x, SurfaceY(level, x, amp, k, phase)));
-        pts.Add(new PointF(Width, SurfaceY(level, Width, amp, k, phase)));
-        pts.Add(new PointF(Width, Height));
-        pts.Add(new PointF(0, Height));
+        pts.Add(new PointF(LW, SurfaceY(level, LW, amp, k, phase)));
+        pts.Add(new PointF(LW, LH));
+        pts.Add(new PointF(0, LH));
         float rise = amp * 3 + Math.Abs(m1) + Math.Abs(m2) + Math.Abs(m3) + Math.Abs(bob) + 6;
-        var rect = new RectangleF(0, Math.Max(0, level - rise), Width,
-            Math.Max(1, Height - level + rise));
+        var rect = new RectangleF(0, Math.Max(0, level - rise), LW,
+            Math.Max(1, LH - level + rise));
         using (var lg = new LinearGradientBrush(rect, top, bottom, LinearGradientMode.Vertical))
         {
             var prev2 = g.SmoothingMode;
@@ -1025,7 +1066,7 @@ class CompactForm : Form
         {
             var t = "TODAY  " + Store.UnitName;
             var sz = g.MeasureString(t, fT8);
-            g.DrawString(t, fT8, b, (Width - sz.Width) / 2, 14);
+            g.DrawString(t, fT8, b, (LW - sz.Width) / 2, 14);
         }
 
         long shownL = (long)Math.Round(shown);
@@ -1035,21 +1076,21 @@ class CompactForm : Form
             if (fitFont != null && fitFont != fHuge) fitFont.Dispose();
             if (fitFontR != null && fitFontR != fHugeR) fitFontR.Dispose();
             var m = g.MeasureString(tok, fHuge);
-            if (m.Width <= Width - 28)
+            if (m.Width <= LW - 28)
             {
                 fitFont = fHuge;
                 fitFontR = fHugeR;
             }
             else
             {
-                float size = fHuge.Size * (Width - 28) / m.Width;
+                float size = fHuge.Size * (LW - 28) / m.Width;
                 fitFont = new Font("Yu Gothic UI", size, FontStyle.Bold);
                 fitFontR = new Font("Yu Gothic UI", size, FontStyle.Regular);
             }
             fitLen = tok.Length;
         }
         var tsz = g.MeasureString(tok, fitFont);
-        float cx = Width / 2f, cy = Height / 2f - 8;
+        float cx = LW / 2f, cy = LH / 2f - 8;
 
         // 数字だけ太字、単位 (K/M/G) はレギュラーで軽く見せる
         int sufAt = tok.Length;
@@ -1121,7 +1162,7 @@ class CompactForm : Form
         {
             var t = "tokens";
             var sz = g.MeasureString(t, fT8);
-            g.DrawString(t, fT8, b, (Width - sz.Width) / 2, cy + tsz.Height / 2 - 6);
+            g.DrawString(t, fT8, b, (LW - sz.Width) / 2, cy + tsz.Height / 2 - 6);
         }
 
         // +N フロート: 1UP 風。出た瞬間が速く、減速しながらすーっと昇って消える
@@ -1208,7 +1249,7 @@ class CompactForm : Form
         g.Restore(st);
 
         // 下段: コストと使用率（変換の外 = 揺らさない）
-        DrawShadowed(g, Store.Money(today.Cost), fMid11, Theme.Fg, Height - 54);
+        DrawShadowed(g, Store.Money(today.Cost), fMid11, Theme.Fg, LH - 54);
         // 凡例は水の色と対応させる: ● 5h = 青、● 週 = 紫
         {
             string t1 = string.Format(CultureInfo.InvariantCulture, "● 5h {0:0}%", sesPct);
@@ -1216,8 +1257,8 @@ class CompactForm : Form
             var s1 = g.MeasureString(t1, fT8);
             var s2 = g.MeasureString(t2, fT8);
             float total = s1.Width + 10 + s2.Width;
-            float lx = (Width - total) / 2;
-            float ly = Height - 32;
+            float lx = (LW - total) / 2;
+            float ly = LH - 32;
             using (var sh = new SolidBrush(Color.FromArgb(170, 0, 0, 0)))
             {
                 g.DrawString(t1, fT8, sh, lx + 1, ly + 1);
@@ -1242,7 +1283,7 @@ class CompactForm : Form
             if (x.Key == "weekly_all") fW = ResetFrac(x.ResetsAt, 168.0);
         }
         DrawEdgeBar(g, 2, fS, Color.FromArgb(120, 180, 255));
-        DrawEdgeBar(g, Height - 5, fW, Color.FromArgb(190, 160, 255));
+        DrawEdgeBar(g, LH - 5, fW, Color.FromArgb(190, 160, 255));
     }
 
     static Color Lerp(Color a, Color b, float t)
@@ -1259,7 +1300,7 @@ class CompactForm : Form
     void DrawShadowed(Graphics g, string t, Font f, Color c, float y)
     {
         var sz = g.MeasureString(t, f);
-        float x = (Width - sz.Width) / 2;
+        float x = (LW - sz.Width) / 2;
         using (var b = new SolidBrush(Color.FromArgb(170, 0, 0, 0)))
             g.DrawString(t, f, b, x + 1, y + 1);
         using (var b = new SolidBrush(c))
@@ -1268,12 +1309,15 @@ class CompactForm : Form
 
     void DrawBorder(Graphics g)
     {
-        // 1px の白い縁取り。角のドットが欠けないよう AA を切って描く。
+        // 1px の白い縁取りは縮尺の外で描く（0.5px になって欠けるのを防ぐ）。
+        var st = g.Save();
+        g.ResetTransform();
         var prev = g.SmoothingMode;
         g.SmoothingMode = SmoothingMode.None;
         using (var p = new Pen(Theme.Border, 1f))
             g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
         g.SmoothingMode = prev;
+        g.Restore(st);
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -1283,6 +1327,8 @@ class CompactForm : Form
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
         using (var b = new SolidBrush(Theme.Bg)) g.FillRectangle(b, ClientRectangle);
+        // 以降の描画はすべて論理 240x240。実サイズへはここで一括縮尺する
+        g.ScaleTransform(Store.WinScale, Store.WinScale);
 
         if (Store.LayoutMode == Store.Layout.Big)
         {
@@ -1304,7 +1350,7 @@ class CompactForm : Form
         {
             var u = Store.UnitName;
             var sz = g.MeasureString(u, fSmall);
-            g.DrawString(u, fSmall, b, Width - 12 - sz.Width, y);
+            g.DrawString(u, fSmall, b, LW - 12 - sz.Width, y);
         }
         y += 20;
 
@@ -1316,20 +1362,20 @@ class CompactForm : Form
 
         foreach (var s in samples)
         {
-            if (y > Height - 66) break;
+            if (y > LH - 66) break;
             var col = Theme.ForPct(s.Percent);
             using (var b = new SolidBrush(Theme.Fg))
                 g.DrawString(s.Label, fSmall, b, 12, y);
             using (var b = new SolidBrush(Theme.Mut))
             {
                 var sz = g.MeasureString(Store.Left(s.ResetsAt), fSmall);
-                g.DrawString(Store.Left(s.ResetsAt), fSmall, b, Width - 12 - sz.Width, y);
+                g.DrawString(Store.Left(s.ResetsAt), fSmall, b, LW - 12 - sz.Width, y);
             }
             y += 17;
             using (var b = new SolidBrush(col))
                 g.DrawString(s.Percent.ToString("0", CultureInfo.InvariantCulture) + "%", fPct, b, 10, y - 4);
             // バー
-            int bx = 62, bw = Width - bx - 12;
+            int bx = 62, bw = LW - bx - 12;
             using (var b = new SolidBrush(Theme.Card)) g.FillRectangle(b, bx, y + 6, bw, 7);
             using (var b = new SolidBrush(col))
                 g.FillRectangle(b, bx, y + 6, (int)(bw * Math.Min(s.Percent, 100) / 100.0), 7);
@@ -1340,29 +1386,29 @@ class CompactForm : Form
         }
 
         // 今日の実測
-        using (var p = new Pen(Theme.Line)) g.DrawLine(p, 12, Height - 46, Width - 12, Height - 46);
+        using (var p = new Pen(Theme.Line)) g.DrawLine(p, 12, LH - 46, LW - 12, LH - 46);
         using (var b = new SolidBrush(Theme.Mut))
-            g.DrawString("TODAY", fSmall, b, 12, Height - 40);
+            g.DrawString("TODAY", fSmall, b, 12, LH - 40);
         using (var b = new SolidBrush(Theme.Fg))
             g.DrawString(Store.Tokens(today.Tokens) + " tok   " + Store.Money(today.Cost),
-                fMid, b, 12, Height - 25);
+                fMid, b, 12, LH - 25);
         using (var b = new SolidBrush(Theme.Mut))
         {
             string s2 = today.Sessions.Count + " session";
             var sz = g.MeasureString(s2, fSmall);
-            g.DrawString(s2, fSmall, b, Width - 12 - sz.Width, Height - 22);
+            g.DrawString(s2, fSmall, b, LW - 12 - sz.Width, LH - 22);
         }
 
         using (var b = new SolidBrush(Theme.Line))
-            g.DrawString("クリックで詳細 / ドラッグで移動", new Font("Yu Gothic UI", 7f), b, 12, Height - 60);
+            g.DrawString("クリックで詳細 / ドラッグで移動", new Font("Yu Gothic UI", 7f), b, 12, LH - 60);
 
         using (var b0 = new SolidBrush(Theme.Line))
         using (var f0 = new Font("Yu Gothic UI", 7f))
-            g.DrawString("クリックで表示切替 / ドラッグで移動", f0, b0, 12, Height - 60);
+            g.DrawString("クリックで表示切替 / ドラッグで移動", f0, b0, 12, LH - 60);
 
         if (!Store.RecorderAlive())
             using (var b = new SolidBrush(Theme.Bad))
-                g.DrawString("● 記録停止中", fSmall, b, Width - 90, Height - 40);
+                g.DrawString("● 記録停止中", fSmall, b, LW - 90, LH - 40);
 
         fSmall.Dispose(); fPct.Dispose(); fMid.Dispose();
     }
