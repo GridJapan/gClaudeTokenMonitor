@@ -977,17 +977,18 @@ class CompactForm : Form
             Color.FromArgb(130, 170, 210, 255));
     }
 
-    /// <summary>リセットまでの残り時間の割合 0..1。リセット直後 = 1、リセット時 = 0。</summary>
+    /// <summary>窓の経過割合 0..1。リセット直後 = 0 から始まり、時間が進むほど
+    /// 伸びて、リセット時刻で満タン = 1 になる（残り 51 分の 5h 窓なら約 0.83）。</summary>
     static double ResetFrac(string resetsAt, double windowHours)
     {
         DateTime t;
         if (!DateTime.TryParse(resetsAt, null, DateTimeStyles.RoundtripKind, out t)) return -1;
         double remain = (t.ToLocalTime() - DateTime.Now).TotalHours;
-        if (remain <= 0) return 0;
-        return Math.Min(1.0, remain / windowHours);
+        if (remain <= 0) return 1;
+        return Math.Max(0.0, Math.Min(1.0, 1.0 - remain / windowHours));
     }
 
-    /// <summary>画面の縁に沿う細いプログレスバー。残りぶんだけ左から塗る。</summary>
+    /// <summary>画面の縁に沿う細いプログレスバー。経過ぶんだけ左から塗る。</summary>
     void DrawEdgeBar(Graphics g, float y, double frac, Color c)
     {
         if (frac < 0) return;
@@ -1274,8 +1275,8 @@ class CompactForm : Form
             using (var b = new SolidBrush(Theme.Bad))
                 g.DrawString("● 記録停止中", fT8, b, 10, 8);
 
-        // 縁のバー: 上端 = 5h リセットまでの残り（青）、下端 = 週（紫）。
-        // 水の色と同じ系統。リセット直後は満タン、時間経過で左から縮む。
+        // 縁のバー: 上端 = 5h 窓の経過（青）、下端 = 週の経過（紫）。
+        // リセット直後は空で、時間が進むほど右へ伸び、満タンでリセット。
         double fS = -1, fW = -1;
         foreach (var x in samples)
         {

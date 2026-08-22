@@ -52,22 +52,25 @@ type recState struct {
 
 // recEvent is one archived message. Field names follow GLOSSARY.md.
 type recEvent struct {
-	TS      string  `json:"ts"`
-	Key     string  `json:"key"`
-	Session string  `json:"session"`
-	CWDName string  `json:"cwd_name"`
-	Model   string  `json:"model"`
-	Input   int     `json:"input"`
-	CW5m    int     `json:"cache_write_5m"`
-	CW1h    int     `json:"cache_write_1h"`
-	CRead   int     `json:"cache_read"`
-	Output  int     `json:"output"`
-	Total   int     `json:"total"`
-	Cost    float64 `json:"cost_usd"`
-	Priced  bool    `json:"priced"`
-	Model2  string  `json:"effort,omitempty"`          // 推論エフォート (high など)
-	Speed   string  `json:"speed,omitempty"`           // standard / fast
-	Think   int     `json:"thinking_tokens,omitempty"` // output の内数
+	TS      string `json:"ts"`
+	Session string `json:"session"`
+	CWDName string `json:"cwd_name"`
+	Model   string `json:"model"`
+	Effort  string `json:"effort,omitempty"` // 推論エフォート (high / max など)
+	Speed   string `json:"speed,omitempty"`  // standard / fast
+
+	Input  int `json:"input"`
+	CW5m   int `json:"cache_write_5m"`
+	CW1h   int `json:"cache_write_1h"`
+	CRead  int `json:"cache_read"`
+	Output int `json:"output"`
+	Think  int `json:"thinking_tokens,omitempty"` // output の内数
+	Total  int `json:"total"`
+
+	Cost   float64 `json:"cost_usd"`
+	Priced bool    `json:"priced"`
+
+	Key string `json:"key"` // 重複排除キー message.id|requestId
 	// Prompt は必ず最後に置く。値に "total": のような文字列が入っても、
 	// 素朴な先頭一致パーサ（UI 側）が実フィールドを先に見つけられるように。
 	Prompt string `json:"prompt,omitempty"`
@@ -340,7 +343,7 @@ func (r *Recorder) write(e Entry) error {
 		Input: e.Input, CW5m: e.CacheWrite5m, CW1h: e.CacheWrite1h,
 		CRead: e.CacheRead, Output: e.Output, Total: e.Total(),
 		Cost: e.Cost, Priced: e.Known, Prompt: e.Prompt,
-		Model2: e.Effort, Speed: e.Speed, Think: e.Think,
+		Effort: e.Effort, Speed: e.Speed, Think: e.Think,
 	}
 	b, err := json.Marshal(rec)
 	if err != nil {
@@ -386,11 +389,19 @@ func (r *Recorder) tick() (int, error) {
 
 	var batch []Entry
 	var fresh []string
+	// 重複行は同一応答が数ミリ秒差で連続して書かれるため、ほぼ必ず同じ tick に
+	// 入ってくる。確定済みの seen だけでなく、この batch 内でも弾くこと。
+	// （これを怠ると再取り込みで全重複が素通りする。実際に一度やらかした）
+	batchSeen := map[string]struct{}{}
 	_, err := r.sc.Scan(func(e Entry, key string) bool {
 		if key != "" {
 			if _, dup := r.seen[key]; dup {
 				return false
 			}
+			if _, dup := batchSeen[key]; dup {
+				return false
+			}
+			batchSeen[key] = struct{}{}
 		}
 		batch = append(batch, e)
 		fresh = append(fresh, key)
