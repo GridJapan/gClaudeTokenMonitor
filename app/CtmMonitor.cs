@@ -286,7 +286,24 @@ static class Store
         return t;
     }
 
+    static bool aliveCached;
+    static DateTime aliveCheckedAt;
+    static DateTime aliveLastTrue;
+
+    /// <summary>常駐レコーダーの生存判定。30fps の描画から呼ばれるため 1 秒に
+    /// 1 回しか実チェックせず、ロック書き換え中の一瞬の読み失敗では落とさない
+    /// （8 秒のグレース）。本当に止まったときだけ「記録停止中」が点く。</summary>
     public static bool RecorderAlive()
+    {
+        var now = DateTime.Now;
+        if ((now - aliveCheckedAt).TotalMilliseconds < 1000) return aliveCached;
+        aliveCheckedAt = now;
+        if (RecorderAliveRaw()) aliveLastTrue = now;
+        aliveCached = (now - aliveLastTrue).TotalSeconds < 8;
+        return aliveCached;
+    }
+
+    static bool RecorderAliveRaw()
     {
         string p = Path.Combine(Root, "record.lock");
         if (!File.Exists(p)) return false;

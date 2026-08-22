@@ -183,8 +183,7 @@ func (r *Recorder) touchLock() error {
 			for i := len(b); i < lockLen; i++ {
 				pad[i] = ' '
 			}
-			pad[lockLen-1] = '
-'
+			pad[lockLen-1] = '\n'
 			b = pad
 		}
 		if _, err := r.lockFile.WriteAt(b, 0); err != nil {
