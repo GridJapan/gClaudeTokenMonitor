@@ -855,33 +855,59 @@ class CompactForm : Form
     }
 
     /// <summary>水槽の背景。5 時間制限の使用率が水位になり、水面が揺れる。</summary>
-    float WaterLevel()
+    float LevelFor(double pct)
     {
-        double pct = 0;
-        foreach (var x in samples) if (x.Key == "session") pct = x.Percent;
         float level = (float)(Height * (1.0 - Math.Min(pct, 100) / 100.0));
         return Math.Max(16, Math.Min(Height - 10, level));
     }
 
+    /// <summary>手前の水面（5h）。泡・しぶきの基準はこちら。</summary>
+    float WaterLevel()
+    {
+        double pct = 0;
+        foreach (var x in samples) if (x.Key == "session") pct = x.Percent;
+        return LevelFor(pct);
+    }
+
+    // 水槽は 2 層:
+    //   奥  = 週間・全モデル（紫）… 長い窓なのでゆっくり・控えめに揺れる
+    //   手前 = 5 時間制限（青）  … 今の窓。物理の主役
     void PaintWater(Graphics g)
     {
-        float level = WaterLevel();
+        double ses = 0, wk = 0;
+        foreach (var x in samples)
+        {
+            if (x.Key == "session") ses = x.Percent;
+            if (x.Key == "weekly_all") wk = x.Percent;
+        }
+        float lvW = LevelFor(wk);
+        float lvS = LevelFor(ses);
 
-        // 奥の層（薄く・ゆっくり・逆位相）と手前の層で立体感を出す
-        DrawWaveFill(g, level - 2, 4.0f, 0.040f, waterPhase * 0.7 + 2.1,
-            Color.FromArgb(45, 96, 140, 235), Color.FromArgb(60, 30, 45, 110));
-        DrawWaveFill(g, level, 3.2f, 0.045f, waterPhase,
-            Color.FromArgb(85, 96, 150, 240), Color.FromArgb(110, 34, 52, 130));
+        // ---- 奥: 週（紫）----
+        DrawWaveFill(g, lvW, 3.4f, 0.034f, waterPhase * 0.6 + 1.3,
+            Color.FromArgb(70, 150, 115, 235), Color.FromArgb(90, 55, 38, 130));
+        DrawSurfaceLine(g, lvW, 3.4f, 0.034f, waterPhase * 0.6 + 1.3,
+            Color.FromArgb(90, 200, 170, 255));
 
-        // 水面のハイライト
-        using (var pen = new Pen(Color.FromArgb(120, 170, 205, 255), 1.2f))
+        // ---- 手前: 5h（青・二重塗りで深さを出す）----
+        DrawWaveFill(g, lvS - 2, 4.0f, 0.040f, waterPhase * 0.7 + 2.1,
+            Color.FromArgb(50, 96, 140, 235), Color.FromArgb(65, 30, 45, 110));
+        DrawWaveFill(g, lvS, 3.2f, 0.045f, waterPhase,
+            Color.FromArgb(95, 96, 155, 245), Color.FromArgb(120, 30, 52, 135));
+        DrawSurfaceLine(g, lvS, 3.2f, 0.045f, waterPhase,
+            Color.FromArgb(130, 170, 210, 255));
+    }
+
+    void DrawSurfaceLine(Graphics g, float level, float amp, float k, double phase, Color c)
+    {
+        using (var pen = new Pen(c, 1.2f))
         {
             var prev2 = g.SmoothingMode;
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            float px = 0, py = SurfaceY(level, 0, 3.2f, 0.045f, waterPhase);
+            float px = 0, py = SurfaceY(level, 0, amp, k, phase);
             for (int x2 = 4; x2 <= Width; x2 += 4)
             {
-                float y2 = SurfaceY(level, x2, 3.2f, 0.045f, waterPhase);
+                float y2 = SurfaceY(level, x2, amp, k, phase);
                 g.DrawLine(pen, px, py, x2, y2);
                 px = x2; py = y2;
             }
@@ -1075,9 +1101,25 @@ class CompactForm : Form
 
         // 下段: コストと使用率（変換の外 = 揺らさない）
         DrawShadowed(g, Store.Money(today.Cost), fMid11, Theme.Fg, Height - 54);
-        DrawShadowed(g, string.Format(CultureInfo.InvariantCulture,
-            "5h {0:0}%   週 {1:0}%", sesPct, wkPct), fT8,
-            Color.FromArgb(210, 214, 222, 240), Height - 32);
+        // 凡例は水の色と対応させる: ● 5h = 青、● 週 = 紫
+        {
+            string t1 = string.Format(CultureInfo.InvariantCulture, "● 5h {0:0}%", sesPct);
+            string t2 = string.Format(CultureInfo.InvariantCulture, "● 週 {0:0}%", wkPct);
+            var s1 = g.MeasureString(t1, fT8);
+            var s2 = g.MeasureString(t2, fT8);
+            float total = s1.Width + 10 + s2.Width;
+            float lx = (Width - total) / 2;
+            float ly = Height - 32;
+            using (var sh = new SolidBrush(Color.FromArgb(170, 0, 0, 0)))
+            {
+                g.DrawString(t1, fT8, sh, lx + 1, ly + 1);
+                g.DrawString(t2, fT8, sh, lx + s1.Width + 10 + 1, ly + 1);
+            }
+            using (var b = new SolidBrush(Color.FromArgb(235, 140, 190, 255)))
+                g.DrawString(t1, fT8, b, lx, ly);
+            using (var b = new SolidBrush(Color.FromArgb(235, 190, 160, 255)))
+                g.DrawString(t2, fT8, b, lx + s1.Width + 10, ly);
+        }
 
         if (!Store.RecorderAlive())
             using (var b = new SolidBrush(Theme.Bad))
