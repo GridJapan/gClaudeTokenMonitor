@@ -876,6 +876,8 @@ class CompactForm : Form
     readonly Font fHugeR = new Font("Yu Gothic UI", 36f, FontStyle.Regular);
     float flash;                              // バースト直後に数字が金色に光る 0..1
     int glintFor;                             // 水面グリントを湧かせ続ける残りフレーム数
+    float sweepT = -1f;                       // 縁バーを走る光 0..1（-1 = 待機）
+    int sweepWait;                            // 次の光までのフレーム数
     readonly Font fF13 = new Font("Yu Gothic UI", 13f, FontStyle.Bold);
     readonly Font fT7 = new Font("Yu Gothic UI", 7f);
 
@@ -1084,6 +1086,17 @@ class CompactForm : Form
 
         waterPhase += 0.05 + punch * 0.5 + chop * 0.25;
 
+        // 縁バーの進行感: 約 5 秒に 1 回、塗られた部分を光の帯が走る
+        if (sweepT >= 0f)
+        {
+            sweepT += 0.05f;
+            if (sweepT > 1f) { sweepT = -1f; sweepWait = 0; }
+        }
+        else if (++sweepWait >= 150)   // 30fps × 5 秒
+        {
+            sweepT = 0f;
+        }
+
         // スプリング補間: くるくる回りながら現在値に吸い付く
         vel = vel * 0.87 + (target - shown) * 0.095;   // 少し長く回してカウントアップを見せる
         shown += vel;
@@ -1248,16 +1261,38 @@ class CompactForm : Form
         return Math.Max(0.0, Math.Min(1.0, 1.0 - remain / windowHours));
     }
 
-    /// <summary>画面の縁に沿う細いプログレスバー。経過ぶんだけ左から塗る。</summary>
+    /// <summary>画面の縁に沿う細いプログレスバー。経過ぶんだけ左から塗り、
+    /// 約 5 秒に 1 回、塗られた部分を光の帯が走って「進んでいる」ことを見せる。</summary>
     void DrawEdgeBar(Graphics g, float y, double frac, Color c)
     {
         if (frac < 0) return;
         using (var track = new SolidBrush(Color.FromArgb(55, c)))
             g.FillRectangle(track, 1, y, LW - 2, 3);
         float w = (float)((LW - 2) * frac);
-        if (w >= 1)
-            using (var fill = new SolidBrush(Color.FromArgb(230, c)))
-                g.FillRectangle(fill, 1, y, w, 3);
+        if (w < 1) return;
+        using (var fill = new SolidBrush(Color.FromArgb(230, c)))
+            g.FillRectangle(fill, 1, y, w, 3);
+
+        if (sweepT >= 0f && w >= 8)
+        {
+            float bandW = Math.Max(14f, Math.Min(30f, w * 0.5f));
+            float bx = 1 + (w + bandW) * sweepT - bandW;
+            var clip = g.Clip;
+            g.SetClip(new RectangleF(1, y, w, 3), CombineMode.Intersect);
+            var rect = new RectangleF(bx, y, bandW, 3);
+            using (var lg = new LinearGradientBrush(rect,
+                       Color.FromArgb(0, 255, 255, 255), Color.FromArgb(0, 255, 255, 255),
+                       LinearGradientMode.Horizontal))
+            {
+                var cb = new ColorBlend(3);
+                cb.Colors = new[] { Color.FromArgb(0, 255, 255, 255),
+                    Color.FromArgb(150, 255, 255, 255), Color.FromArgb(0, 255, 255, 255) };
+                cb.Positions = new[] { 0f, 0.5f, 1f };
+                lg.InterpolationColors = cb;
+                g.FillRectangle(lg, rect);
+            }
+            g.Clip = clip;
+        }
     }
 
     void DrawSurfaceLine(Graphics g, float level, float amp, float k, double phase, Color c)
