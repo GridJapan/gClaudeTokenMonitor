@@ -388,6 +388,13 @@ class CompactForm : Form
         timer.Tick += delegate { Reload(); };
         timer.Start();
 
+        // 60fps 級の再描画でもちらつかないように明示。Form.DoubleBuffered だけでは不足。
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint
+               | ControlStyles.OptimizedDoubleBuffer, true);
+        fx.Interval = 33;
+        fx.Tick += FxTick;
+        fx.Start();
+
         // クリックで詳細、ドラッグで移動。両者は移動量で判別する。
         MouseDown += delegate (object o, MouseEventArgs e)
         {
@@ -472,6 +479,26 @@ class CompactForm : Form
 
     DetailForm detail;
 
+    // ---- Big レイアウトの演出状態 --------------------------------------
+    readonly Timer fx = new Timer();          // 33ms ≒ 30fps。Big 表示中だけ動かす
+    double shown, target, vel;                // 表示値のスプリング補間
+    bool primed;                              // 初回読み込み済みか（初回はスナップ）
+    float punch;                              // スケールパンチ（減衰）
+    int tier;                                 // 直近バーストの強度 1..4
+    float shimmerT = -1f;                     // ハイライト帯の進行 0..1（-1 = 停止）
+    double waterPhase;                        // 水面の位相
+    readonly List<float[]> parts = new List<float[]>();   // x,y,vx,vy,age,maxAge,size
+    readonly List<object[]> floats = new List<object[]>(); // [text, life]
+    readonly Random rng = new Random();
+
+    // 30fps で毎フレーム new しないための共有フォント
+    readonly Font fT8 = new Font("Yu Gothic UI", 8f);
+    readonly Font fT9b = new Font("Yu Gothic UI", 9f, FontStyle.Bold);
+    readonly Font fMid11 = new Font("Yu Gothic UI", 11f, FontStyle.Bold);
+    readonly Font fHuge = new Font("Yu Gothic UI", 30f, FontStyle.Bold);
+    Font fitFont;
+    int fitLen;
+
     // モニタ窓は出したまま、詳細窓を横に開く。既に開いていれば前面に出すだけ。
     void OpenDetail()
     {
@@ -490,8 +517,82 @@ class CompactForm : Form
     public void Reload()
     {
         samples = Store.Latest();
-        today = Store.Today();
+        var t = Store.Today();
+        long nt = t.Tokens;
+        if (!primed)
+        {
+            primed = true;
+            shown = target = nt;      // 起動直後の「今日すでに 2 億」は演出しない
+        }
+        else if (nt > target)
+        {
+            long delta = nt - (long)target;
+            target = nt;
+            if (Store.LayoutMode == Store.Layout.Big) TriggerFx(delta);
+            else shown = nt;          // Detail 表示中は静かに追従
+        }
+        else if (nt < target)
+        {
+            target = nt;              // 日付が変わって今日の合計が減った
+            shown = nt;
+        }
+        today = t;
         Invalidate();
+    }
+
+    /// <summary>増分の大きさで演出の強度を決める。5 秒ごとに必ず起きるので
+    /// 小さい増分は控えめに、大きいバーストだけ派手にする。</summary>
+    void TriggerFx(long delta)
+    {
+        tier = delta < 50000 ? 1 : delta < 200000 ? 2 : delta < 1000000 ? 3 : 4;
+        punch = 0.03f + 0.02f * tier;
+        if (tier >= 2) shimmerT = 0f;
+        int pn = tier <= 1 ? 0 : tier == 2 ? 6 : tier == 3 ? 14 : 26;
+        for (int i = 0; i < pn; i++)
+            parts.Add(new float[] {
+                Width / 2f + (float)(rng.NextDouble() * 120 - 60),
+                Height / 2f + (float)(rng.NextDouble() * 24 - 12),
+                (float)(rng.NextDouble() * 1.6 - 0.8),
+                (float)(-0.6 - rng.NextDouble() * 1.8),
+                0f, (float)(30 + rng.NextDouble() * 25),
+                (float)(1.5 + rng.NextDouble() * 2.2) });
+        floats.Add(new object[] { "+" + Store.Tokens(delta), 1f });
+        if (floats.Count > 3) floats.RemoveAt(0);
+    }
+
+    void FxTick(object o, EventArgs e)
+    {
+        if (Store.LayoutMode != Store.Layout.Big || !Visible
+            || WindowState == FormWindowState.Minimized) return;
+
+        waterPhase += 0.05 + punch * 0.5;
+
+        // スプリング補間: くるくる回りながら現在値に吸い付く
+        vel = vel * 0.82 + (target - shown) * 0.16;
+        shown += vel;
+        if (Math.Abs(target - shown) < 0.6 && Math.Abs(vel) < 0.6) { shown = target; vel = 0; }
+
+        if (punch > 0.001f) punch *= 0.88f; else punch = 0f;
+        if (shimmerT >= 0f) { shimmerT += 0.04f; if (shimmerT > 1f) shimmerT = -1f; }
+
+        for (int i = parts.Count - 1; i >= 0; i--)
+        {
+            var pt = parts[i];
+            pt[0] += pt[2]; pt[1] += pt[3]; pt[3] *= 0.985f; pt[4] += 1f;
+            if (pt[4] >= pt[5]) parts.RemoveAt(i);
+        }
+        for (int i = floats.Count - 1; i >= 0; i--)
+        {
+            var f = floats[i];
+            f[1] = (float)f[1] - 0.018f;
+            if ((float)f[1] <= 0f) floats.RemoveAt(i);
+        }
+        Invalidate();
+    }
+
+    protected override void OnPaintBackground(PaintEventArgs e)
+    {
+        // OnPaint が全面を塗るので既定の消去は不要。消すとちらつきの元になる。
     }
 
     // FormBorderStyle.None のままだと WS_MINIMIZEBOX が付かず、タスクバーの
@@ -546,71 +647,199 @@ class CompactForm : Form
         BringToFront();
     }
 
-    /// <summary>トークン数を中央に大きく出すだけの表示。離れた場所からでも読める。</summary>
+    /// <summary>水槽の背景。5 時間制限の使用率が水位になり、水面が揺れる。</summary>
+    void PaintWater(Graphics g)
+    {
+        double pct = 0;
+        foreach (var x in samples) if (x.Key == "session") pct = x.Percent;
+        float level = (float)(Height * (1.0 - Math.Min(pct, 100) / 100.0));
+        level = Math.Max(16, Math.Min(Height - 10, level));
+
+        // 奥の層（薄く・ゆっくり・逆位相）と手前の層で立体感を出す
+        DrawWaveFill(g, level - 2, 4.0f, 0.040f, waterPhase * 0.7 + 2.1,
+            Color.FromArgb(45, 96, 140, 235), Color.FromArgb(60, 30, 45, 110));
+        DrawWaveFill(g, level, 3.2f, 0.045f, waterPhase,
+            Color.FromArgb(85, 96, 150, 240), Color.FromArgb(110, 34, 52, 130));
+
+        // 水面のハイライト
+        using (var pen = new Pen(Color.FromArgb(120, 170, 205, 255), 1.2f))
+        {
+            var prev2 = g.SmoothingMode;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            float px = 0, py = SurfaceY(level, 0, 3.2f, 0.045f, waterPhase);
+            for (int x2 = 4; x2 <= Width; x2 += 4)
+            {
+                float y2 = SurfaceY(level, x2, 3.2f, 0.045f, waterPhase);
+                g.DrawLine(pen, px, py, x2, y2);
+                px = x2; py = y2;
+            }
+            g.SmoothingMode = prev2;
+        }
+    }
+
+    static float SurfaceY(float level, float x, float amp, float k, double phase)
+    {
+        return level
+            + amp * (float)Math.Sin(x * k + phase)
+            + amp * 0.55f * (float)Math.Sin(x * k * 2.6 - phase * 1.6);
+    }
+
+    void DrawWaveFill(Graphics g, float level, float amp, float k, double phase,
+        Color top, Color bottom)
+    {
+        var pts = new List<PointF>();
+        for (int x = 0; x <= Width; x += 6)
+            pts.Add(new PointF(x, SurfaceY(level, x, amp, k, phase)));
+        pts.Add(new PointF(Width, SurfaceY(level, Width, amp, k, phase)));
+        pts.Add(new PointF(Width, Height));
+        pts.Add(new PointF(0, Height));
+        var rect = new RectangleF(0, Math.Max(0, level - amp * 2), Width,
+            Math.Max(1, Height - level + amp * 2));
+        using (var lg = new LinearGradientBrush(rect, top, bottom, LinearGradientMode.Vertical))
+        {
+            var prev2 = g.SmoothingMode;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.FillPolygon(lg, pts.ToArray());
+            g.SmoothingMode = prev2;
+        }
+    }
+
+    /// <summary>Big レイアウト。今日のトークン数がスプリングでカウントアップし、
+    /// 増分に応じてパンチ・シマー・粒子・+N フロートが乗る。背景は水槽。</summary>
     void PaintBig(Graphics g)
     {
-        var fTiny = new Font("Yu Gothic UI", 8f);
-        var fHuge = new Font("Yu Gothic UI", 30f, FontStyle.Bold);
-        var fMid = new Font("Yu Gothic UI", 11f, FontStyle.Bold);
+        double sesPct = 0, wkPct = 0, maxPct = 0;
+        foreach (var x in samples)
+        {
+            if (x.Percent > maxPct) maxPct = x.Percent;
+            if (x.Key == "session") sesPct = x.Percent;
+            if (x.Key == "weekly_all") wkPct = x.Percent;
+        }
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
 
-        double maxPct = 0;
-        foreach (var x in samples) if (x.Percent > maxPct) maxPct = x.Percent;
-        var col = Theme.ForPct(maxPct);
-
-        // 上: 何の数字か
         using (var b = new SolidBrush(Theme.Mut))
         {
             var t = "TODAY  " + Store.UnitName;
-            var sz = g.MeasureString(t, fTiny);
-            g.DrawString(t, fTiny, b, (Width - sz.Width) / 2, 20);
+            var sz = g.MeasureString(t, fT8);
+            g.DrawString(t, fT8, b, (Width - sz.Width) / 2, 14);
         }
 
-        // 中央: トークン数
-        var tok = Store.Tokens(today.Tokens);
-        var tsz = g.MeasureString(tok, fHuge);
-        var fit = fHuge;
-        if (tsz.Width > Width - 24)
+        long shownL = (long)Math.Round(shown);
+        var tok = Store.Tokens(shownL);
+        if (fitFont == null || fitLen != tok.Length)
         {
-            fit = new Font("Yu Gothic UI", 30f * (Width - 24) / tsz.Width, FontStyle.Bold);
-            tsz = g.MeasureString(tok, fit);
+            if (fitFont != null && fitFont != fHuge) fitFont.Dispose();
+            var m = g.MeasureString(tok, fHuge);
+            fitFont = m.Width <= Width - 28 ? fHuge
+                : new Font("Yu Gothic UI", fHuge.Size * (Width - 28) / m.Width, FontStyle.Bold);
+            fitLen = tok.Length;
         }
+        var tsz = g.MeasureString(tok, fitFont);
+        float cx = Width / 2f, cy = Height / 2f - 8;
+
+        var st = g.Save();
+        float sc = 1f + punch;
+        float shx = (tier >= 4 && punch > 0.02f)
+            ? (float)(rng.NextDouble() * 3 - 1.5) : 0f;
+        g.TranslateTransform(cx + shx, cy);
+        g.ScaleTransform(sc, sc);
+        g.TranslateTransform(-cx, -cy);
+
+        // 本体（うっすら影を落として水と分離する）
+        using (var b = new SolidBrush(Color.FromArgb(140, 0, 0, 0)))
+            g.DrawString(tok, fitFont, b, cx - tsz.Width / 2 + 1.5f, cy - tsz.Height / 2 + 1.5f);
         using (var b = new SolidBrush(Theme.Fg))
-            g.DrawString(tok, fit, b, (Width - tsz.Width) / 2, Height / 2 - tsz.Height / 2 - 8);
-        if (fit != fHuge) fit.Dispose();
+            g.DrawString(tok, fitFont, b, cx - tsz.Width / 2, cy - tsz.Height / 2);
+
+        // シマー: ハイライト帯が数字の上を走る
+        if (shimmerT >= 0f)
+        {
+            float bandW = Math.Max(24, tsz.Width * 0.55f);
+            float bx = cx - tsz.Width / 2 - bandW + shimmerT * (tsz.Width + bandW * 2);
+            var band = new RectangleF(bx, cy - tsz.Height / 2, bandW, tsz.Height);
+            int a = 28 + tier * 16;
+            var clip = g.Clip;
+            g.SetClip(band, CombineMode.Intersect);
+            using (var lg = new LinearGradientBrush(band,
+                       Color.FromArgb(0, 255, 255, 255), Color.FromArgb(0, 255, 255, 255),
+                       LinearGradientMode.Horizontal))
+            {
+                var cb = new ColorBlend(3);
+                cb.Colors = new[] { Color.FromArgb(0, 255, 255, 255),
+                    Color.FromArgb(a, 255, 255, 255), Color.FromArgb(0, 255, 255, 255) };
+                cb.Positions = new[] { 0f, 0.5f, 1f };
+                lg.InterpolationColors = cb;
+                g.DrawString(tok, fitFont, lg, cx - tsz.Width / 2, cy - tsz.Height / 2);
+            }
+            g.Clip = clip;
+        }
 
         using (var b = new SolidBrush(Theme.Mut))
         {
             var t = "tokens";
-            var sz = g.MeasureString(t, fTiny);
-            g.DrawString(t, fTiny, b, (Width - sz.Width) / 2, Height / 2 + tsz.Height / 2 - 10);
+            var sz = g.MeasureString(t, fT8);
+            g.DrawString(t, fT8, b, (Width - sz.Width) / 2, cy + tsz.Height / 2 - 6);
         }
 
-        // 下: コストと、いちばん逼迫している枠の使用率
-        using (var b = new SolidBrush(Theme.Fg))
+        // +N フロート
+        foreach (var f in floats)
         {
-            var t = Store.Money(today.Cost);
-            var sz = g.MeasureString(t, fMid);
-            g.DrawString(t, fMid, b, (Width - sz.Width) / 2, Height - 62);
+            float life = (float)f[1];
+            var t = (string)f[0];
+            var sz = g.MeasureString(t, fT9b);
+            float fy = cy - tsz.Height / 2 - 12 - (1f - life) * 22f;
+            using (var b = new SolidBrush(Color.FromArgb((int)(200 * life), Theme.Ok)))
+                g.DrawString(t, fT9b, b, cx - sz.Width / 2, fy);
         }
-        if (samples.Count > 0)
+
+        // 粒子（白・アクセント・金の 3 色でまたたく）
+        var prev = g.SmoothingMode;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        for (int i = 0; i < parts.Count; i++)
         {
-            int bw = Width - 48;
-            using (var b = new SolidBrush(Theme.Card)) g.FillRectangle(b, 24, Height - 34, bw, 6);
-            using (var b = new SolidBrush(col))
-                g.FillRectangle(b, 24, Height - 34, (int)(bw * Math.Min(maxPct, 100) / 100.0), 6);
-            using (var b = new SolidBrush(col))
-            {
-                var t = maxPct.ToString("0", CultureInfo.InvariantCulture) + "%";
-                var sz = g.MeasureString(t, fTiny);
-                g.DrawString(t, fTiny, b, (Width - sz.Width) / 2, Height - 24);
-            }
+            var pt = parts[i];
+            float life = 1f - pt[4] / pt[5];
+            float tw = 0.7f + 0.3f * (float)Math.Sin(pt[4] * 0.8);
+            int a = (int)(255 * life * tw);
+            Color c = i % 3 == 0 ? Color.White
+                : i % 3 == 1 ? Theme.Accent : Color.FromArgb(240, 200, 120);
+            float sz = pt[6] * (0.6f + 0.4f * life);
+            using (var b = new SolidBrush(Color.FromArgb(Math.Max(0, Math.Min(255, a)), c)))
+                g.FillEllipse(b, pt[0] - sz / 2, pt[1] - sz / 2, sz, sz);
         }
+        g.SmoothingMode = prev;
+        g.Restore(st);
+
+        // 下段: コストと使用率（変換の外 = 揺らさない）
+        DrawShadowed(g, Store.Money(today.Cost), fMid11, Theme.Fg, Height - 54);
+        DrawShadowed(g, string.Format(CultureInfo.InvariantCulture,
+            "5h {0:0}%   週 {1:0}%", sesPct, wkPct), fT8,
+            Color.FromArgb(210, 214, 222, 240), Height - 32);
 
         if (!Store.RecorderAlive())
             using (var b = new SolidBrush(Theme.Bad))
-                g.DrawString("● 記録停止中", fTiny, b, 12, 8);
+                g.DrawString("● 記録停止中", fT8, b, 10, 8);
+    }
 
-        fTiny.Dispose(); fHuge.Dispose(); fMid.Dispose();
+    /// <summary>水面の上でも読めるよう、黒い影を敷いて中央揃えで描く。</summary>
+    void DrawShadowed(Graphics g, string t, Font f, Color c, float y)
+    {
+        var sz = g.MeasureString(t, f);
+        float x = (Width - sz.Width) / 2;
+        using (var b = new SolidBrush(Color.FromArgb(170, 0, 0, 0)))
+            g.DrawString(t, f, b, x + 1, y + 1);
+        using (var b = new SolidBrush(c))
+            g.DrawString(t, f, b, x, y);
+    }
+
+    void DrawBorder(Graphics g)
+    {
+        // 1px の白い縁取り。角のドットが欠けないよう AA を切って描く。
+        var prev = g.SmoothingMode;
+        g.SmoothingMode = SmoothingMode.None;
+        using (var p = new Pen(Theme.Border, 1f))
+            g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
+        g.SmoothingMode = prev;
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -620,14 +849,15 @@ class CompactForm : Form
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
         using (var b = new SolidBrush(Theme.Bg)) g.FillRectangle(b, ClientRectangle);
-        // 1px の白い縁取り。角のドットが欠けないよう Pixel オフセットで描く。
-        var prev = g.SmoothingMode;
-        g.SmoothingMode = SmoothingMode.None;
-        using (var p = new Pen(Theme.Border, 1f))
-            g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
-        g.SmoothingMode = prev;
 
-        if (Store.LayoutMode == Store.Layout.Big) { PaintBig(g); return; }
+        if (Store.LayoutMode == Store.Layout.Big)
+        {
+            PaintWater(g);   // 背景の水槽（水位 = 5 時間制限）
+            PaintBig(g);     // 数字と演出
+            DrawBorder(g);   // 枠は最後。水に揺らされない
+            return;
+        }
+        DrawBorder(g);
 
         var fSmall = new Font("Yu Gothic UI", 8f);
         var fPct = new Font("Yu Gothic UI", 15f, FontStyle.Bold);
