@@ -861,6 +861,7 @@ class CompactForm : Form
     float flash;                              // バースト直後に数字が金色に光る 0..1
     int glintFor;                             // 水面グリントを湧かせ続ける残りフレーム数
     readonly Font fF13 = new Font("Yu Gothic UI", 13f, FontStyle.Bold);
+    readonly Font fT7 = new Font("Yu Gothic UI", 7f);
 
     // モニタ窓は出したまま、詳細窓を横に開く。既に開いていれば前面に出すだけ。
     void OpenDetail()
@@ -1629,26 +1630,29 @@ class CompactForm : Form
             y += 38;
         }
 
-        // 今日の実測
+        // 選択中の集計期間（5h / week）の実測。Big と同じ窓・同じ数字
         using (var p = new Pen(Theme.Line)) g.DrawLine(p, 12, LH - 46, LW - 12, LH - 46);
         using (var b = new SolidBrush(Theme.Mut))
-            g.DrawString("TODAY", fSmall, b, 12, LH - 40);
+            g.DrawString(Store.PeriodLabel, fSmall, b, 12, LH - 40);
         using (var b = new SolidBrush(Theme.Fg))
-            g.DrawString(Store.Tokens(today.Tokens) + " tok   " + Store.Money(today.Cost),
+            g.DrawString(Store.Tokens((long)target) + " tok   " + Store.Money(periodCost),
                 fMid, b, 12, LH - 25);
-        using (var b = new SolidBrush(Theme.Mut))
+        // 右側: この窓のリセットまでの残り
         {
-            string s2 = today.Sessions.Count + " session";
-            var sz = g.MeasureString(s2, fSmall);
-            g.DrawString(s2, fSmall, b, LW - 12 - sz.Width, LH - 22);
+            string key = Store.PeriodMode == Store.Period.Week ? "weekly_all" : "session";
+            string left = "";
+            foreach (var x in samples)
+                if (x.Key == key) left = "reset " + Store.Left(x.ResetsAt);
+            if (left.Length > 0)
+                using (var b = new SolidBrush(Theme.Mut))
+                {
+                    var sz = g.MeasureString(left, fSmall);
+                    g.DrawString(left, fSmall, b, LW - 12 - sz.Width, LH - 22);
+                }
         }
 
-        using (var b = new SolidBrush(Theme.Line))
-            g.DrawString("クリックで詳細 / ドラッグで移動", new Font("Yu Gothic UI", 7f), b, 12, LH - 60);
-
         using (var b0 = new SolidBrush(Theme.Line))
-        using (var f0 = new Font("Yu Gothic UI", 7f))
-            g.DrawString("クリックで表示切替 / ドラッグで移動", f0, b0, 12, LH - 60);
+            g.DrawString("クリックで表示切替 / ドラッグで移動", fT7, b0, 12, LH - 60);
 
         if (!Store.RecorderAlive())
             using (var b = new SolidBrush(Theme.Bad))
