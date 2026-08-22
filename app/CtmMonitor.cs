@@ -584,6 +584,7 @@ class CompactForm : Form
     int fitLen;
     readonly Font fHugeR = new Font("Yu Gothic UI", 36f, FontStyle.Regular);
     float flash;                              // バースト直後に数字が金色に光る 0..1
+    int glintFor;                             // 水面グリントを湧かせ続ける残りフレーム数
     readonly Font fF13 = new Font("Yu Gothic UI", 13f, FontStyle.Bold);
 
     // モニタ窓は出したまま、詳細窓を横に開く。既に開いていれば前面に出すだけ。
@@ -656,6 +657,9 @@ class CompactForm : Form
         floats.Add(new object[] { "+" + Store.Tokens(delta), 1f });
         if (floats.Count > 4) floats.RemoveAt(0);
 
+        // +N が昇っている間、水面が光の反射できらめき続ける
+        glintFor = 45 + tier * 15;
+
         // 水も一緒に祝う: 中央がぼよんと跳ね、細波が立ち、水位が一瞬持ち上がる
         chop = Math.Min(1.6f, chop + 0.10f + 0.08f * tier);
         m2v -= 0.9f * tier;
@@ -674,6 +678,21 @@ class CompactForm : Form
                 0f, (float)(55 + rng.NextDouble() * 45),
                 (float)(1.6 + rng.NextDouble() * 1.9),
                 2f });                                   // type 2 = 泡キラ
+    }
+
+    /// <summary>水面に短命の光点を置く。y は毎フレーム波の高さから計算するので
+    /// グリントは波に乗って上下する = 水のきらめきに見える。</summary>
+    void SpawnGlint(int n)
+    {
+        for (int i = 0; i < n && parts.Count < 140; i++)
+            parts.Add(new float[] {
+                (float)(rng.NextDouble() * Width),          // x
+                -(float)(rng.NextDouble() * 2.5),           // 水面からの浮き（y ではない）
+                (float)((rng.NextDouble() - 0.5) * 0.5),    // ゆっくり横に流れる
+                0f,
+                0f, (float)(14 + rng.NextDouble() * 16),    // 短命: 0.5〜1 秒
+                (float)(1.6 + rng.NextDouble() * 2.2),
+                3f });                                       // type 3 = 水面グリント
     }
 
     void FxTick(object o, EventArgs e)
@@ -731,6 +750,18 @@ class CompactForm : Form
         chop *= 0.95f;
         if (chop > 1.6f) chop = 1.6f;
 
+        // 水面のグリント（光の反射）。バースト中は湧き続け、
+        // 揺すって波が荒れているときも自然に光る
+        if (glintFor > 0)
+        {
+            glintFor--;
+            SpawnGlint(tier >= 3 ? 2 : 1);
+        }
+        else if (chop > 0.3f && rng.NextDouble() < chop * 0.10)
+        {
+            SpawnGlint(1);
+        }
+
         // 強い縦ジャークでしぶきが跳ねる。水面の山から上向きに飛び、重力で戻る
         float jolt = Math.Abs(ay) + Math.Abs(dy) * 0.5f;
         if (jolt > 6f && parts.Count < 140)   // 揺すり続けても粒子を溜め込みすぎない
@@ -755,6 +786,9 @@ class CompactForm : Form
         // スプリング補間: くるくる回りながら現在値に吸い付く
         vel = vel * 0.87 + (target - shown) * 0.095;   // 少し長く回してカウントアップを見せる
         shown += vel;
+        // カウンタは絶対に逆走させない。バネが行き過ぎたら目標で止める
+        // （行き過ぎ → 戻り は数字が「増えて減る」ように見えて気持ち悪い）
+        if (shown > target) { shown = target; vel = 0; }
         if (Math.Abs(target - shown) < 0.6 && Math.Abs(vel) < 0.6) { shown = target; vel = 0; }
 
         if (punch > 0.001f) punch *= 0.88f; else punch = 0f;
@@ -768,8 +802,10 @@ class CompactForm : Form
             pt[0] += pt[2]; pt[1] += pt[3]; pt[4] += 1f;
             float ptype = pt.Length > 7 ? pt[7] : 0f;
             bool droplet = ptype == 1f;
-            bool bubble = ptype >= 2f;
-            if (droplet) pt[3] += 0.22f;          // しぶきは重力で放物線を描く
+            bool glint = ptype >= 3f;
+            bool bubble = !glint && ptype >= 2f;
+            if (glint) { pt[0] += pt[2]; pt[4] += 0f; }   // 波に乗るだけ（y は描画時に計算）
+            else if (droplet) pt[3] += 0.22f;     // しぶきは重力で放物線を描く
             else if (bubble)
             {
                 // 泡: 浮力で加速しつつ左右にゆらゆら
@@ -1105,6 +1141,7 @@ class CompactForm : Form
         }
 
         // 粒子（白・アクセント・金の 3 色でまたたく）
+        float lvGlint = WaterLevel();
         var prev = g.SmoothingMode;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         for (int i = 0; i < parts.Count; i++)
@@ -1112,6 +1149,22 @@ class CompactForm : Form
             var pt = parts[i];
             float life = 1f - pt[4] / pt[5];
             float ptype = pt.Length > 7 ? pt[7] : 0f;
+            if (ptype >= 3f)                       // 水面グリント: 波に乗る横長の光
+            {
+                float prog = pt[4] / pt[5];
+                int ga = (int)(240 * Math.Sin(Math.PI * Math.Min(1f, prog)));
+                if (ga < 8) continue;
+                float gy = SurfaceY(lvGlint, pt[0], 3.2f, 0.045f, waterPhase) + pt[1];
+                float gs = pt[6];
+                // 水の反射は横に伸びる。縦は短く
+                using (var pen = new Pen(Color.FromArgb(ga, 225, 245, 255), 1.3f))
+                    g.DrawLine(pen, pt[0] - gs * 2.2f, gy, pt[0] + gs * 2.2f, gy);
+                using (var pen = new Pen(Color.FromArgb(ga / 2, 225, 245, 255), 1f))
+                    g.DrawLine(pen, pt[0], gy - gs * 0.7f, pt[0], gy + gs * 0.7f);
+                using (var core = new SolidBrush(Color.FromArgb(Math.Min(255, ga + 15), 255, 255, 255)))
+                    g.FillEllipse(core, pt[0] - gs * 0.4f, gy - gs * 0.4f, gs * 0.8f, gs * 0.8f);
+                continue;
+            }
             if (ptype == 1f)                       // しぶき
             {
                 int da = (int)(255 * life);
@@ -1159,7 +1212,7 @@ class CompactForm : Form
         // 凡例は水の色と対応させる: ● 5h = 青、● 週 = 紫
         {
             string t1 = string.Format(CultureInfo.InvariantCulture, "● 5h {0:0}%", sesPct);
-            string t2 = string.Format(CultureInfo.InvariantCulture, "● 週 {0:0}%", wkPct);
+            string t2 = string.Format(CultureInfo.InvariantCulture, "● week {0:0}%", wkPct);
             var s1 = g.MeasureString(t1, fT8);
             var s2 = g.MeasureString(t2, fT8);
             float total = s1.Width + 10 + s2.Width;
