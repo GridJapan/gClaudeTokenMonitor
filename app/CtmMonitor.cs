@@ -269,12 +269,15 @@ static class Store
         }
     }
 
-    public static void CycleUnit()
+    public static void SetUnit(Unit u)
     {
-        TokenUnit = TokenUnit == Unit.Auto ? Unit.K
-                  : TokenUnit == Unit.K ? Unit.M
-                  : TokenUnit == Unit.M ? Unit.Raw
-                  : Unit.Auto;
+        TokenUnit = u;
+        SaveSettings();
+    }
+
+    public static void ToggleLayout()
+    {
+        LayoutMode = LayoutMode == Layout.Detail ? Layout.Big : Layout.Detail;
         SaveSettings();
     }
 
@@ -283,6 +286,11 @@ static class Store
     static string SettingsPath { get { return Path.Combine(Root, "ui.json"); } }
 
     public static Point WindowPos = Point.Empty;
+
+    /// <summary>コンパクト窓の見た目。クリックで切り替える。</summary>
+    public enum Layout { Detail, Big }
+
+    public static Layout LayoutMode = Layout.Detail;
 
     public static void LoadSettings()
     {
@@ -297,6 +305,7 @@ static class Store
             else TokenUnit = Unit.Auto;
             int x = (int)Num(txt, "x"), y = (int)Num(txt, "y");
             if (x != 0 || y != 0) WindowPos = new Point(x, y);
+            LayoutMode = Str(txt, "layout") == "Big" ? Layout.Big : Layout.Detail;
         }
         catch { }
     }
@@ -308,8 +317,8 @@ static class Store
             Directory.CreateDirectory(Root);
             File.WriteAllText(SettingsPath, string.Format(
                 CultureInfo.InvariantCulture,
-                "{{\"unit\":\"{0}\",\"x\":{1},\"y\":{2}}}",
-                UnitName, WindowPos.X, WindowPos.Y));
+                "{{\"unit\":\"{0}\",\"x\":{1},\"y\":{2},\"layout\":\"{3}\"}}",
+                UnitName, WindowPos.X, WindowPos.Y, LayoutMode));
         }
         catch { }
     }
@@ -400,7 +409,7 @@ class CompactForm : Form
             if (moved) Store.SaveSettings();
             if (e.Button == MouseButtons.Left && dragging && !moved)
             {
-                Store.CycleUnit();      // 詳細は右クリックメニューから開く
+                Store.ToggleLayout();   // 単位は右クリックの「表示単位」から
                 Invalidate();
             }
             dragging = false;
@@ -408,6 +417,27 @@ class CompactForm : Form
 
         var menu = new ContextMenuStrip();
         menu.Items.Add("過去ログを開く", null, delegate { OpenDetail(); });
+
+        // 表示単位はチェック式のサブメニューで選ぶ。
+        var unitMenu = new ToolStripMenuItem("表示単位");
+        var units = new[] { Store.Unit.Auto, Store.Unit.K, Store.Unit.M, Store.Unit.Raw };
+        var labels = new[] { "AUTO（自動）", "K（千）", "M（百万）", "RAW（実数）" };
+        var items = new ToolStripMenuItem[units.Length];
+        for (int i = 0; i < units.Length; i++)
+        {
+            var u = units[i];
+            var mi = new ToolStripMenuItem(labels[i]);
+            mi.Checked = Store.TokenUnit == u;
+            mi.Click += delegate
+            {
+                Store.SetUnit(u);
+                for (int k = 0; k < items.Length; k++) items[k].Checked = (units[k] == u);
+                Invalidate();
+            };
+            items[i] = mi;
+            unitMenu.DropDownItems.Add(mi);
+        }
+        menu.Items.Add(unitMenu);
         var top = new ToolStripMenuItem("最前面に固定");
         top.Click += delegate { TopMost = !TopMost; top.Checked = TopMost; };
         menu.Items.Add(top);
@@ -516,6 +546,73 @@ class CompactForm : Form
         BringToFront();
     }
 
+    /// <summary>トークン数を中央に大きく出すだけの表示。離れた場所からでも読める。</summary>
+    void PaintBig(Graphics g)
+    {
+        var fTiny = new Font("Yu Gothic UI", 8f);
+        var fHuge = new Font("Yu Gothic UI", 30f, FontStyle.Bold);
+        var fMid = new Font("Yu Gothic UI", 11f, FontStyle.Bold);
+
+        double maxPct = 0;
+        foreach (var x in samples) if (x.Percent > maxPct) maxPct = x.Percent;
+        var col = Theme.ForPct(maxPct);
+
+        // 上: 何の数字か
+        using (var b = new SolidBrush(Theme.Mut))
+        {
+            var t = "TODAY  " + Store.UnitName;
+            var sz = g.MeasureString(t, fTiny);
+            g.DrawString(t, fTiny, b, (Width - sz.Width) / 2, 20);
+        }
+
+        // 中央: トークン数
+        var tok = Store.Tokens(today.Tokens);
+        var tsz = g.MeasureString(tok, fHuge);
+        var fit = fHuge;
+        if (tsz.Width > Width - 24)
+        {
+            fit = new Font("Yu Gothic UI", 30f * (Width - 24) / tsz.Width, FontStyle.Bold);
+            tsz = g.MeasureString(tok, fit);
+        }
+        using (var b = new SolidBrush(Theme.Fg))
+            g.DrawString(tok, fit, b, (Width - tsz.Width) / 2, Height / 2 - tsz.Height / 2 - 8);
+        if (fit != fHuge) fit.Dispose();
+
+        using (var b = new SolidBrush(Theme.Mut))
+        {
+            var t = "tokens";
+            var sz = g.MeasureString(t, fTiny);
+            g.DrawString(t, fTiny, b, (Width - sz.Width) / 2, Height / 2 + tsz.Height / 2 - 10);
+        }
+
+        // 下: コストと、いちばん逼迫している枠の使用率
+        using (var b = new SolidBrush(Theme.Fg))
+        {
+            var t = Store.Money(today.Cost);
+            var sz = g.MeasureString(t, fMid);
+            g.DrawString(t, fMid, b, (Width - sz.Width) / 2, Height - 62);
+        }
+        if (samples.Count > 0)
+        {
+            int bw = Width - 48;
+            using (var b = new SolidBrush(Theme.Card)) g.FillRectangle(b, 24, Height - 34, bw, 6);
+            using (var b = new SolidBrush(col))
+                g.FillRectangle(b, 24, Height - 34, (int)(bw * Math.Min(maxPct, 100) / 100.0), 6);
+            using (var b = new SolidBrush(col))
+            {
+                var t = maxPct.ToString("0", CultureInfo.InvariantCulture) + "%";
+                var sz = g.MeasureString(t, fTiny);
+                g.DrawString(t, fTiny, b, (Width - sz.Width) / 2, Height - 24);
+            }
+        }
+
+        if (!Store.RecorderAlive())
+            using (var b = new SolidBrush(Theme.Bad))
+                g.DrawString("● 記録停止中", fTiny, b, 12, 8);
+
+        fTiny.Dispose(); fHuge.Dispose(); fMid.Dispose();
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
@@ -529,6 +626,8 @@ class CompactForm : Form
         using (var p = new Pen(Theme.Border, 1f))
             g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
         g.SmoothingMode = prev;
+
+        if (Store.LayoutMode == Store.Layout.Big) { PaintBig(g); return; }
 
         var fSmall = new Font("Yu Gothic UI", 8f);
         var fPct = new Font("Yu Gothic UI", 15f, FontStyle.Bold);
@@ -595,7 +694,7 @@ class CompactForm : Form
 
         using (var b0 = new SolidBrush(Theme.Line))
         using (var f0 = new Font("Yu Gothic UI", 7f))
-            g.DrawString("クリックで単位切替 / ドラッグで移動", f0, b0, 12, Height - 60);
+            g.DrawString("クリックで表示切替 / ドラッグで移動", f0, b0, 12, Height - 60);
 
         if (!Store.RecorderAlive())
             using (var b = new SolidBrush(Theme.Bad))
