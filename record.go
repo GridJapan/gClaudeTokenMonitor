@@ -37,6 +37,7 @@ type Recorder struct {
 	usageEvery time.Duration
 	usageNext  time.Time
 	usageFails int
+	lastErr    string // 同じエラーを 200ms ごとに書かないための直近値
 
 	lockFile *os.File
 	lockIntv time.Duration
@@ -153,9 +154,21 @@ func (r *Recorder) acquireLock(interval time.Duration) error {
 		var l recLock
 		if json.Unmarshal(b, &l) == nil {
 			if t, perr := time.Parse(time.RFC3339, l.Heartbeat); perr == nil {
-				if age := time.Since(t); age < l.staleAfter() {
-					return fmt.Errorf("別のレコーダーが %s を記録中 (pid %d, %.0f 秒前に更新)。"+
-						"二重記録を避けるため起動しない", r.Dir, l.PID, age.Seconds())
+				age := time.Since(t)
+				if age < l.staleAfter() {
+					if pidAlive(l.PID) {
+						return fmt.Errorf("別のレコーダーが %s を記録中 (pid %d, %.0f 秒前に更新)。"+
+							"二重記録を避けるため起動しない", r.Dir, l.PID, age.Seconds())
+					}
+					// heartbeat は新しいのにプロセスが居ない = クラッシュ。
+					// 証跡を crash.log に残して引き継ぐ
+					appendCrashLog(r.Dir, fmt.Sprintf(
+						"[recorder] takeover: pid %d は消滅 (heartbeat %.0f 秒前) — クラッシュとみなして引き継ぐ",
+						l.PID, age.Seconds()))
+				} else {
+					appendCrashLog(r.Dir, fmt.Sprintf(
+						"[recorder] takeover: pid %d の heartbeat が %s 前で停止 — 引き継ぐ",
+						l.PID, dur(age)))
 				}
 			}
 		}
@@ -374,6 +387,18 @@ func mdSafe(s string) string {
 	return strings.ReplaceAll(s, "|", "\u2502")
 }
 
+// appendCrashLog is the dedicated ledger of abnormal events: takeovers and
+// crash-restarts, written by both the recorder and the UI supervisor.
+func appendCrashLog(dir, line string) {
+	f, err := os.OpenFile(filepath.Join(dir, "crash.log"),
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s %s\n", time.Now().Format(time.RFC3339), line)
+}
+
 func (r *Recorder) logf(format string, args ...any) {
 	f, err := os.OpenFile(filepath.Join(r.Dir, "record.log"),
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
@@ -548,9 +573,15 @@ func RunRecord(dir, root string, interval, usageEvery time.Duration, quiet bool)
 			}
 			n, err := r.tick()
 			if err != nil {
-				r.logf("tick: %v", err)
+				// projects 未作成の新しいマシン等では同じエラーが続く。
+				// 変化したときだけ書いて record.log を膨らませない
+				if msg := err.Error(); msg != r.lastErr {
+					r.lastErr = msg
+					r.logf("tick: %v", err)
+				}
 				continue
 			}
+			r.lastErr = ""
 			report(n)
 			if usageEvery > 0 && !time.Now().Before(r.usageNext) {
 				_ = r.touchLock()
@@ -577,6 +608,8 @@ func RecordStatus(dir string) error {
 	state := "稼働中"
 	if age > 3*time.Minute {
 		state = "応答なし（" + dur(age) + " 更新なし）"
+	} else if !pidAlive(l.PID) {
+		state = "クラッシュ（pid " + comma(l.PID) + " は消滅。UI が自動復旧するか、ctm record で再開）"
 	}
 	fmt.Printf("レコーダー: %s\n", state)
 	fmt.Printf("  pid          %d\n", l.PID)

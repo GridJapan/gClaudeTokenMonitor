@@ -21,7 +21,23 @@ var (
 	procGetConsoleMode             = kernel32.NewProc("GetConsoleMode")
 	procSetConsoleMode             = kernel32.NewProc("SetConsoleMode")
 	procGetConsoleScreenBufferInfo = kernel32.NewProc("GetConsoleScreenBufferInfo")
+	procOpenProcess                = kernel32.NewProc("OpenProcess")
+	procCloseHandle                = kernel32.NewProc("CloseHandle")
 )
+
+// pidAlive reports whether a process with this id exists.
+func pidAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	const processQueryLimitedInformation = 0x1000
+	h, _, _ := procOpenProcess.Call(processQueryLimitedInformation, 0, uintptr(pid))
+	if h == 0 {
+		return false
+	}
+	procCloseHandle.Call(h)
+	return true
+}
 
 type coord struct{ X, Y int16 }
 type smallRect struct{ Left, Top, Right, Bottom int16 }

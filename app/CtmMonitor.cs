@@ -303,6 +303,53 @@ static class Store
         return aliveCached;
     }
 
+    static DateTime lastRestartTry = DateTime.MinValue;
+
+    /// <summary>クラッシュ監視。正常停止（ctm stop = lock 消滅）は尊重して何もしない。
+    /// lock が残っているのに応答が無いときだけ、証跡を crash.log に残して再起動する。
+    /// ハング（プロセスは居るが heartbeat が止まっている）は強制終了してから再起動。</summary>
+    public static void Supervise()
+    {
+        if (RecorderAlive()) return;
+        string lockp = Path.Combine(Root, "record.lock");
+        if (!File.Exists(lockp)) return;                      // 正常停止
+        if ((DateTime.Now - lastRestartTry).TotalSeconds < 30) return;  // 再試行は 30 秒間隔
+        lastRestartTry = DateTime.Now;
+
+        string txt = ReadAllTextShared(lockp);
+        int pid = (int)Num(txt.Replace(" ", ""), "pid");
+        bool palive = PidAlive(pid);
+        LogCrash(string.Format("detect: heartbeat 応答なし (pid={0}, pid_alive={1})", pid, palive));
+        if (palive)
+        {
+            try
+            {
+                Process.GetProcessById(pid).Kill();
+                LogCrash("kill: ハング中の pid " + pid + " を強制終了した");
+            }
+            catch (Exception ex) { LogCrash("kill 失敗: " + ex.Message); }
+        }
+        Run("record -quiet", false);
+        LogCrash("restart: ctm record を再起動した");
+    }
+
+    static bool PidAlive(int pid)
+    {
+        if (pid <= 0) return false;
+        try { return !Process.GetProcessById(pid).HasExited; }
+        catch { return false; }
+    }
+
+    static void LogCrash(string msg)
+    {
+        try
+        {
+            File.AppendAllText(Path.Combine(Root, "crash.log"),
+                DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " [UI] " + msg + "\r\n");
+        }
+        catch { }
+    }
+
     static bool RecorderAliveRaw()
     {
         string p = Path.Combine(Root, "record.lock");
@@ -312,9 +359,13 @@ static class Store
             string txt = ReadAllTextShared(p);
             if (txt.Length == 0) return false;
             DateTime hb;
-            if (!DateTime.TryParse(Str(txt.Replace("\n", "").Replace(" ", ""), "heartbeat"),
+            var flat = txt.Replace("\n", "").Replace(" ", "");
+            if (!DateTime.TryParse(Str(flat, "heartbeat"),
                     null, DateTimeStyles.RoundtripKind, out hb)) return false;
-            return (DateTime.Now - hb.ToLocalTime()).TotalMinutes < 3;
+            if ((DateTime.Now - hb.ToLocalTime()).TotalMinutes >= 3) return false;
+            // heartbeat が新しくてもプロセスが消えていればクラッシュ。
+            // これを見ないと落ちてから 3 分間「稼働中」と誤認して復旧が遅れる
+            return PidAlive((int)Num(flat, "pid"));
         }
         catch { return false; }
     }
@@ -560,6 +611,33 @@ class CompactForm : Form
             sizeMenu.DropDownItems.Add(mi);
         }
         menu.Items.Add(sizeMenu);
+
+        // Windows 起動時に自動開始（このマシンでの自分の絶対パスで登録するので、
+        // どこに clone しても動く。レコーダーはアプリが起動時に起こす）
+        var autorun = new ToolStripMenuItem("Windows 起動時に開始");
+        autorun.Checked = File.Exists(StartupScriptPath);
+        autorun.Click += delegate
+        {
+            try
+            {
+                if (File.Exists(StartupScriptPath)) File.Delete(StartupScriptPath);
+                else
+                {
+                    // VBS: CreateObject("WScript.Shell").Run """<exe>""", 0, False
+                    string q3 = new string('\"', 3);
+                    string vbs = "' CtmMonitor 自動起動（このファイルを消せば解除）\r\n"
+                        + "CreateObject(\"WScript.Shell\").Run " + q3
+                        + Application.ExecutablePath + q3 + ", 0, False\r\n";
+                    File.WriteAllText(StartupScriptPath, vbs);
+                }
+                autorun.Checked = File.Exists(StartupScriptPath);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("登録に失敗: " + ex.Message, "CtmMonitor");
+            }
+        };
+        menu.Items.Add(autorun);
         var top = new ToolStripMenuItem("最前面に固定");
         top.Click += delegate { TopMost = !TopMost; top.Checked = TopMost; };
         menu.Items.Add(top);
@@ -598,6 +676,16 @@ class CompactForm : Form
     // 実ウィンドウサイズへ縮尺する。サイズ追加は Store.WinScale だけでよい。
     const int LW = 240;
     const int LH = 240;
+
+    static string StartupScriptPath
+    {
+        get
+        {
+            return Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.Startup),
+                "CtmMonitor-autostart.vbs");
+        }
+    }
 
     public void ApplySize()
     {
@@ -683,6 +771,7 @@ class CompactForm : Form
             shown = nt;
         }
         today = t;
+        Store.Supervise();   // クラッシュしていれば証跡を残して自動再起動
         Invalidate();
     }
 
