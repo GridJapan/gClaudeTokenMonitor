@@ -513,6 +513,8 @@ class CompactForm : Form
     readonly Font fHuge = new Font("Yu Gothic UI", 36f, FontStyle.Bold);
     Font fitFont;
     int fitLen;
+    float flash;                              // バースト直後に数字が金色に光る 0..1
+    readonly Font fF13 = new Font("Yu Gothic UI", 13f, FontStyle.Bold);
 
     // モニタ窓は出したまま、詳細窓を横に開く。既に開いていれば前面に出すだけ。
     void OpenDetail()
@@ -561,18 +563,28 @@ class CompactForm : Form
     {
         tier = delta < 50000 ? 1 : delta < 200000 ? 2 : delta < 1000000 ? 3 : 4;
         punch = 0.03f + 0.02f * tier;
+        flash = 0.5f + 0.125f * tier;                    // 数字が一瞬金色に光る
         if (tier >= 2) shimmerT = 0f;
-        int pn = tier <= 1 ? 0 : tier == 2 ? 6 : tier == 3 ? 14 : 26;
+
+        // キラ星は数字の縁のリングから外向きに弾ける。数字の真上に湧かせると
+        // 白地に白で見えないので、外周に出してから減速させる
+        int pn = tier == 1 ? 5 : tier == 2 ? 12 : tier == 3 ? 22 : 34;
+        float cx0 = Width / 2f, cy0 = Height / 2f - 8;
         for (int i = 0; i < pn; i++)
+        {
+            double ang = rng.NextDouble() * Math.PI * 2;
+            double rad = 34 + rng.NextDouble() * 30;
+            float spd = (float)(1.6 + rng.NextDouble() * 2.6);
             parts.Add(new float[] {
-                Width / 2f + (float)(rng.NextDouble() * 120 - 60),
-                Height / 2f + (float)(rng.NextDouble() * 24 - 12),
-                (float)(rng.NextDouble() * 1.6 - 0.8),
-                (float)(-0.6 - rng.NextDouble() * 1.8),
-                0f, (float)(30 + rng.NextDouble() * 25),
-                (float)(1.5 + rng.NextDouble() * 2.2), 0f });
+                cx0 + (float)(Math.Cos(ang) * rad),
+                cy0 + (float)(Math.Sin(ang) * rad * 0.55),
+                (float)Math.Cos(ang) * spd,
+                (float)(Math.Sin(ang) * spd * 0.7) - 0.4f,
+                0f, (float)(34 + rng.NextDouble() * 26),
+                (float)(2.6 + rng.NextDouble() * 2.6), 0f });
+        }
         floats.Add(new object[] { "+" + Store.Tokens(delta), 1f });
-        if (floats.Count > 3) floats.RemoveAt(0);
+        if (floats.Count > 4) floats.RemoveAt(0);
     }
 
     void FxTick(object o, EventArgs e)
@@ -652,11 +664,12 @@ class CompactForm : Form
         waterPhase += 0.05 + punch * 0.5 + chop * 0.25;
 
         // スプリング補間: くるくる回りながら現在値に吸い付く
-        vel = vel * 0.82 + (target - shown) * 0.16;
+        vel = vel * 0.87 + (target - shown) * 0.095;   // 少し長く回してカウントアップを見せる
         shown += vel;
         if (Math.Abs(target - shown) < 0.6 && Math.Abs(vel) < 0.6) { shown = target; vel = 0; }
 
         if (punch > 0.001f) punch *= 0.88f; else punch = 0f;
+        if (flash > 0.01f) flash *= 0.90f; else flash = 0f;
         if (shimmerT >= 0f) { shimmerT += 0.04f; if (shimmerT > 1f) shimmerT = -1f; }
 
         float surface = WaterLevel() + bob;
@@ -666,7 +679,7 @@ class CompactForm : Form
             pt[0] += pt[2]; pt[1] += pt[3]; pt[4] += 1f;
             bool droplet = pt.Length > 7 && pt[7] >= 1f;
             if (droplet) pt[3] += 0.22f;          // しぶきは重力で放物線を描く
-            else pt[3] *= 0.985f;                 // キラキラは空気抵抗で漂う
+            else { pt[2] *= 0.93f; pt[3] = pt[3] * 0.93f - 0.035f; }  // キラ星は減速して浮き上がる
             bool dead = pt[4] >= pt[5];
             if (droplet && pt[3] > 0f && pt[1] > surface + 3f)
             {
@@ -678,7 +691,7 @@ class CompactForm : Form
         for (int i = floats.Count - 1; i >= 0; i--)
         {
             var f = floats[i];
-            f[1] = (float)f[1] - 0.018f;
+            f[1] = (float)f[1] - 0.015f;
             if ((float)f[1] <= 0f) floats.RemoveAt(i);
         }
         Invalidate();
@@ -853,7 +866,15 @@ class CompactForm : Form
         // 本体（うっすら影を落として水と分離する）
         using (var b = new SolidBrush(Color.FromArgb(140, 0, 0, 0)))
             g.DrawString(tok, fitFont, b, cx - tsz.Width / 2 + 1.5f, cy - tsz.Height / 2 + 1.5f);
-        using (var b = new SolidBrush(Theme.Fg))
+        // 数字の色は状態で変わる:
+        //   平常 = 白 / 使用率 70% 以上 = 橙 / 90% 以上 = 赤（逼迫が一目で分かる）
+        //   カウントアップ中 = ミント緑がかる（増えている最中だと分かる）
+        //   バースト直後 = 金色に光って戻る
+        Color numCol = maxPct >= 90 ? Theme.Bad : maxPct >= 70 ? Theme.Warn : Theme.Fg;
+        float counting = (float)Math.Min(1.0, Math.Abs(target - shown) / 4000.0);
+        numCol = Lerp(numCol, Color.FromArgb(150, 235, 170), counting * 0.8f);
+        numCol = Lerp(numCol, Color.FromArgb(255, 224, 120), flash);
+        using (var b = new SolidBrush(numCol))
             g.DrawString(tok, fitFont, b, cx - tsz.Width / 2, cy - tsz.Height / 2);
 
         // シマー: ハイライト帯が数字の上を走る
@@ -886,15 +907,20 @@ class CompactForm : Form
             g.DrawString(t, fT8, b, (Width - sz.Width) / 2, cy + tsz.Height / 2 - 6);
         }
 
-        // +N フロート
+        // +N フロート: 1UP 風。出た瞬間が速く、減速しながらすーっと昇って消える
         foreach (var f in floats)
         {
             float life = (float)f[1];
             var t = (string)f[0];
-            var sz = g.MeasureString(t, fT9b);
-            float fy = cy - tsz.Height / 2 - 12 - (1f - life) * 22f;
-            using (var b = new SolidBrush(Color.FromArgb((int)(200 * life), Theme.Ok)))
-                g.DrawString(t, fT9b, b, cx - sz.Width / 2, fy);
+            float rise = (float)(1 - Math.Pow(life, 0.6)) * 58f;   // ease-out で 58px 上昇
+            float fy = cy - tsz.Height / 2 - 16 - rise;
+            int a = (int)(255 * Math.Min(1f, life * 3f));          // 最後の 1/3 でフェード
+            var sz = g.MeasureString(t, fF13);
+            float fx2 = cx - sz.Width / 2;
+            using (var b = new SolidBrush(Color.FromArgb(a * 2 / 3, 0, 0, 0)))
+                g.DrawString(t, fF13, b, fx2 + 1.5f, fy + 1.5f);   // 影
+            using (var b = new SolidBrush(Color.FromArgb(a, 150, 235, 170)))
+                g.DrawString(t, fF13, b, fx2, fy);                 // 明るい緑
         }
 
         // 粒子（白・アクセント・金の 3 色でまたたく）
@@ -905,14 +931,30 @@ class CompactForm : Form
             var pt = parts[i];
             float life = 1f - pt[4] / pt[5];
             bool droplet = pt.Length > 7 && pt[7] >= 1f;
-            float tw = droplet ? 1f : 0.7f + 0.3f * (float)Math.Sin(pt[4] * 0.8);
-            int a = (int)(255 * life * tw);
-            Color c = droplet ? Color.FromArgb(185, 220, 255)
-                : i % 3 == 0 ? Color.White
-                : i % 3 == 1 ? Theme.Accent : Color.FromArgb(240, 200, 120);
-            float sz = pt[6] * (0.6f + 0.4f * life);
-            using (var b = new SolidBrush(Color.FromArgb(Math.Max(0, Math.Min(255, a)), c)))
-                g.FillEllipse(b, pt[0] - sz / 2, pt[1] - sz / 2, sz, sz);
+            if (droplet)
+            {
+                int da = (int)(255 * life);
+                float dsz = pt[6] * (0.6f + 0.4f * life);
+                using (var b = new SolidBrush(Color.FromArgb(Math.Max(0, Math.Min(255, da)), 185, 220, 255)))
+                    g.FillEllipse(b, pt[0] - dsz / 2, pt[1] - dsz / 2, dsz, dsz);
+                continue;
+            }
+            // キラ星: 強くまたたく十字 + 中心のコア + うっすらグロー
+            float tw = 0.45f + 0.55f * (float)Math.Sin(pt[4] * 1.1 + i);
+            int a = (int)(255 * life * Math.Abs(tw));
+            if (a < 6) continue;
+            Color c = i % 3 == 0 ? Color.White
+                : i % 3 == 1 ? Color.FromArgb(170, 190, 255) : Color.FromArgb(255, 215, 130);
+            float r2 = pt[6] * (0.5f + 0.5f * life) * (0.8f + 0.4f * Math.Abs(tw));
+            using (var glow = new SolidBrush(Color.FromArgb(a / 5, c)))
+                g.FillEllipse(glow, pt[0] - r2 * 1.8f, pt[1] - r2 * 1.8f, r2 * 3.6f, r2 * 3.6f);
+            using (var pen = new Pen(Color.FromArgb(a, c), 1.4f))
+            {
+                g.DrawLine(pen, pt[0] - r2 * 1.7f, pt[1], pt[0] + r2 * 1.7f, pt[1]);
+                g.DrawLine(pen, pt[0], pt[1] - r2 * 1.7f, pt[0], pt[1] + r2 * 1.7f);
+            }
+            using (var core = new SolidBrush(Color.FromArgb(a, 255, 255, 255)))
+                g.FillEllipse(core, pt[0] - r2 * 0.55f, pt[1] - r2 * 0.55f, r2 * 1.1f, r2 * 1.1f);
         }
         g.SmoothingMode = prev;
         g.Restore(st);
@@ -926,6 +968,16 @@ class CompactForm : Form
         if (!Store.RecorderAlive())
             using (var b = new SolidBrush(Theme.Bad))
                 g.DrawString("● 記録停止中", fT8, b, 10, 8);
+    }
+
+    static Color Lerp(Color a, Color b, float t)
+    {
+        if (t <= 0f) return a;
+        if (t > 1f) t = 1f;
+        return Color.FromArgb(255,
+            (int)(a.R + (b.R - a.R) * t),
+            (int)(a.G + (b.G - a.G) * t),
+            (int)(a.B + (b.B - a.B) * t));
     }
 
     /// <summary>水面の上でも読めるよう、黒い影を敷いて中央揃えで描く。</summary>
