@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -28,16 +30,14 @@ type Recorder struct {
 	Dir  string
 	sc   *Scanner
 	seen map[string]int // dedup キー -> その日 (yyyymmdd)
-	day  string
-	ev   *os.File
-	md   *os.File
-	evw  *bufio.Writer
-	mdw  *bufio.Writer
 
+	mu         sync.Mutex // usageNext / usageFails を守る（poll は別 goroutine）
 	usageEvery time.Duration
 	usageNext  time.Time
 	usageFails int
+	usageBusy  int32  // atomic: 1 = poll 実行中
 	lastErr    string // 同じエラーを 200ms ごとに書かないための直近値
+	skipUnlock bool   // panic 時はロックを残し、UI にクラッシュとして検知させる
 
 	lockFile *os.File
 	lockIntv time.Duration
@@ -212,6 +212,11 @@ func (r *Recorder) releaseLock() {
 		r.lockFile.Close()
 		r.lockFile = nil
 	}
+	if r.skipUnlock {
+		// panic 経由。ロックを残せば「ロック有り + プロセス消滅」になり、
+		// UI の監視がクラッシュとして検知・自動復旧できる
+		return
+	}
 	os.Remove(r.lockPath())
 }
 
@@ -282,82 +287,8 @@ func (r *Recorder) loadSeen() {
 	}
 }
 
-// rotate points the writers at the files for the given day.
-func (r *Recorder) rotate(day string) error {
-	if r.day == day && r.ev != nil {
-		return nil
-	}
-	r.closeFiles()
-
-	ev, err := os.OpenFile(filepath.Join(r.Dir, "events", day+".ndjson"),
-		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return err
-	}
-	mdPath := filepath.Join(r.Dir, "daily", day+".md")
-	fresh := false
-	if _, err := os.Stat(mdPath); os.IsNotExist(err) {
-		fresh = true
-	}
-	md, err := os.OpenFile(mdPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		ev.Close()
-		return err
-	}
-	r.ev, r.md, r.day = ev, md, day
-	r.evw, r.mdw = bufio.NewWriter(ev), bufio.NewWriter(md)
-	if fresh {
-		fmt.Fprintf(r.mdw, "# %s のトークン消費\n\n"+
-			"1 行 = 重複排除後の課金単位 1 件。全セッションを対象に自動記録。\n\n"+
-			"| 時刻 | セッション | 作業ディレクトリ | モデル | input | cache-write 5m | "+
-			"cache-write 1h | cache-read | output | 合計 | コスト | 指示 |\n"+
-			"|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|\n", day)
-	}
-	return nil
-}
-
-// flush pushes the tick's batch to disk. Buffering per tick instead of syncing
-// per message keeps the initial ingest (11k+ messages) fast; a crash costs at
-// most one interval, and the byte offsets in state.json are only advanced after
-// this succeeds.
-func (r *Recorder) flush() error {
-	if r.evw != nil {
-		if err := r.evw.Flush(); err != nil {
-			return err
-		}
-		if err := r.ev.Sync(); err != nil {
-			return err
-		}
-	}
-	if r.mdw != nil {
-		if err := r.mdw.Flush(); err != nil {
-			return err
-		}
-		if err := r.md.Sync(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (r *Recorder) closeFiles() {
-	_ = r.flush()
-	r.evw, r.mdw = nil, nil
-	if r.ev != nil {
-		r.ev.Close()
-		r.ev = nil
-	}
-	if r.md != nil {
-		r.md.Close()
-		r.md = nil
-	}
-}
-
-func (r *Recorder) write(e Entry) error {
-	day := e.TS.Format("2006-01-02")
-	if err := r.rotate(day); err != nil {
-		return fmt.Errorf("rotate %s: %w", day, err)
-	}
+// formatND renders one archived message as an ASCII NDJSON line.
+func formatND(e Entry) ([]byte, error) {
 	rec := recEvent{
 		TS: e.TS.Format(time.RFC3339), Key: e.Key, Session: e.Session,
 		CWDName: e.Project, CWD: e.CWD, Model: e.Model,
@@ -368,23 +299,82 @@ func (r *Recorder) write(e Entry) error {
 	}
 	b, err := json.Marshal(rec)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if _, err := r.evw.Write(asciiEscape(b)); err != nil {
-		return err
-	}
-	r.evw.WriteByte('\n')
-	_, err2 := fmt.Fprintf(r.mdw, "| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | $%.6f | %s |\n",
+	out := asciiEscape(b)
+	return append(out, '\n'), nil
+}
+
+func formatMD(e Entry) string {
+	return fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | $%.6f | %s |\n",
 		e.TS.Format("15:04:05"), trunc(e.Session, 8), e.Project, e.Model,
 		comma(e.Input), comma(e.CacheWrite5m), comma(e.CacheWrite1h),
 		comma(e.CacheRead), comma(e.Output), comma(e.Total()), e.Cost,
 		mdSafe(TruncatePrompt(e.Prompt, 60)))
-	return err2
 }
 
-// mdSafe keeps a prompt from breaking the Markdown table.
-func mdSafe(s string) string {
-	return strings.ReplaceAll(s, "|", "\u2502")
+func mdHeader(day string) string {
+	return fmt.Sprintf("# %s のトークン消費\n\n"+
+		"1 行 = 重複排除後の課金単位 1 件。全セッションを対象に自動記録。\n\n"+
+		"| 時刻 | セッション | 作業ディレクトリ | モデル | input | cache-write 5m | "+
+		"cache-write 1h | cache-read | output | 合計 | コスト | 指示 |\n"+
+		"|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|\n", day)
+}
+
+// appendDay writes one day's batch. On any failure both files are truncated
+// back to their pre-write size, so a rolled-back tick can retry cleanly:
+// no partial line survives, and the retried batch never double-appends.
+func (r *Recorder) appendDay(day string, nd, md []byte) error {
+	evPath := filepath.Join(r.Dir, "events", day+".ndjson")
+	mdPath := filepath.Join(r.Dir, "daily", day+".md")
+
+	evPre := fileSize(evPath)
+	mdPre := fileSize(mdPath)
+	if mdPre < 0 {
+		md = append([]byte(mdHeader(day)), md...)
+	}
+	err := appendSync(evPath, nd)
+	if err == nil {
+		err = appendSync(mdPath, md)
+	}
+	if err != nil {
+		truncateTo(evPath, evPre)
+		truncateTo(mdPath, mdPre)
+		return err
+	}
+	return nil
+}
+
+func fileSize(path string) int64 {
+	st, err := os.Stat(path)
+	if err != nil {
+		return -1
+	}
+	return st.Size()
+}
+
+func appendSync(path string, b []byte) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func truncateTo(path string, size int64) {
+	if size < 0 {
+		os.Remove(path)
+		return
+	}
+	os.Truncate(path, size)
 }
 
 // appendCrashLog is the dedicated ledger of abnormal events: takeovers and
@@ -397,6 +387,11 @@ func appendCrashLog(dir, line string) {
 	}
 	defer f.Close()
 	fmt.Fprintf(f, "%s %s\n", time.Now().Format(time.RFC3339), line)
+}
+
+// mdSafe keeps a prompt from breaking the Markdown table.
+func mdSafe(s string) string {
+	return strings.ReplaceAll(s, "|", "\u2502")
 }
 
 func (r *Recorder) logf(format string, args ...any) {
@@ -413,7 +408,11 @@ func (r *Recorder) logf(format string, args ...any) {
 //
 // Offsets are only persisted after the batch is safely on disk. If a write
 // fails, the in-memory offsets are rolled back so the next pass re-reads the
-// same bytes rather than losing them.
+// tick reads everything appended since the last pass and archives it.
+//
+// Offsets are only persisted after the batch is safely on disk. If a write
+// fails the in-memory offsets are rolled back AND the day files are truncated
+// to their pre-batch size, so the retried batch cannot duplicate lines.
 func (r *Recorder) tick() (int, error) {
 	before := make(map[string]int64, len(r.sc.offsets))
 	for k, v := range r.sc.offsets {
@@ -446,17 +445,33 @@ func (r *Recorder) tick() (int, error) {
 	}
 	if len(batch) > 0 {
 		sort.Slice(batch, func(i, j int) bool { return batch[i].TS.Before(batch[j].TS) })
+
+		// 日別にメモリ上で組み立ててから、日ごとに 1 回で追記する
+		type dayBuf struct{ nd, md []byte }
+		bufs := map[string]*dayBuf{}
+		var days []string
 		for _, e := range batch {
-			if err := r.write(e); err != nil {
+			day := e.TS.Format("2006-01-02")
+			db, ok := bufs[day]
+			if !ok {
+				db = &dayBuf{}
+				bufs[day] = db
+				days = append(days, day)
+			}
+			nd, err := formatND(e)
+			if err != nil {
+				continue
+			}
+			db.nd = append(db.nd, nd...)
+			db.md = append(db.md, []byte(formatMD(e))...)
+		}
+		for _, day := range days {
+			if err := r.appendDay(day, bufs[day].nd, bufs[day].md); err != nil {
 				r.sc.offsets = before
 				return 0, err
 			}
 		}
-		if err := r.flush(); err != nil {
-			r.sc.offsets = before
-			return 0, err
-		}
-		// Only now is the batch durable, so remember the keys and keep the offsets.
+		// Only now is the batch durable, so remember the keys and keep offsets.
 		today := dayNum(time.Now().Format("2006-01-02"))
 		for _, k := range fresh {
 			if k != "" {
@@ -469,7 +484,6 @@ func (r *Recorder) tick() (int, error) {
 		}
 	}
 	// 変化の有無に関わらず、生存表明は 2 秒に 1 回だけ書く。
-	// 200ms 周期でロックを書き続けると無意味なディスク書き込みが 5 回/秒になる。
 	if time.Since(r.lastBeat) >= 2*time.Second {
 		if err := r.touchLock(); err != nil {
 			r.logf("touchLock: %v", err)
@@ -479,27 +493,37 @@ func (r *Recorder) tick() (int, error) {
 	return len(batch), nil
 }
 
-// pollUsage fetches the plan-limit percentages and appends them to the limits
-// log. The endpoint is throttled by Anthropic, so failures back off instead of
-// retrying at the archive interval.
-func (r *Recorder) pollUsage(quiet bool) {
-	samples, err := PollLimits(r.Dir)
-	if err != nil {
-		r.usageFails++
-		back := time.Duration(1<<minInt(r.usageFails, 4)) * r.usageEvery
-		r.usageNext = time.Now().Add(back)
-		r.logf("usage: %v (次回 %s 後)", err, dur(back))
+// maybePollUsage fires the plan-limit poll in its own goroutine so a slow
+// HTTP round trip (up to 30s) can never stall ingestion or the heartbeat.
+func (r *Recorder) maybePollUsage(quiet bool) {
+	r.mu.Lock()
+	due := !time.Now().Before(r.usageNext)
+	r.mu.Unlock()
+	if !due || !atomic.CompareAndSwapInt32(&r.usageBusy, 0, 1) {
 		return
 	}
-	r.usageFails = 0
-	r.usageNext = time.Now().Add(r.usageEvery)
-	if !quiet {
-		var parts []string
-		for _, s := range samples {
-			parts = append(parts, fmt.Sprintf("%s %.0f%%", s.Label, s.Percent))
+	go func() {
+		defer atomic.StoreInt32(&r.usageBusy, 0)
+		samples, err := PollLimits(r.Dir)
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if err != nil {
+			r.usageFails++
+			back := time.Duration(1<<minInt(r.usageFails, 4)) * r.usageEvery
+			r.usageNext = time.Now().Add(back)
+			r.logf("usage: %v (次回 %s 後)", err, dur(back))
+			return
 		}
-		fmt.Printf("\n%s  %s\n", time.Now().Format("15:04:05"), strings.Join(parts, " / "))
-	}
+		r.usageFails = 0
+		r.usageNext = time.Now().Add(r.usageEvery)
+		if !quiet {
+			var parts []string
+			for _, s := range samples {
+				parts = append(parts, fmt.Sprintf("%s %.0f%%", s.Label, s.Percent))
+			}
+			fmt.Printf("\n%s  %s\n", time.Now().Format("15:04:05"), strings.Join(parts, " / "))
+		}
+	}()
 }
 
 func minInt(a, b int) int {
@@ -519,7 +543,14 @@ func RunRecord(dir, root string, interval, usageEvery time.Duration, quiet bool)
 		return err
 	}
 	defer r.releaseLock()
-	defer r.closeFiles()
+	defer func() {
+		if p := recover(); p != nil {
+			// panic はロックを残して落ちる → UI がクラッシュとして自動復旧する
+			appendCrashLog(r.Dir, fmt.Sprintf("[recorder] panic: %v", p))
+			r.skipUnlock = true
+			panic(p)
+		}
+	}()
 	// 前回の停止要求が残っていると起動直後に自死するので、掃除してから始める。
 	os.Remove(r.stopPath())
 	r.usageEvery = usageEvery
@@ -551,7 +582,7 @@ func RunRecord(dir, root string, interval, usageEvery time.Duration, quiet bool)
 	}
 	report(n)
 	if usageEvery > 0 {
-		r.pollUsage(quiet)
+		r.maybePollUsage(quiet)
 	}
 
 	for {
@@ -583,10 +614,8 @@ func RunRecord(dir, root string, interval, usageEvery time.Duration, quiet bool)
 			}
 			r.lastErr = ""
 			report(n)
-			if usageEvery > 0 && !time.Now().Before(r.usageNext) {
-				_ = r.touchLock()
-				r.pollUsage(quiet)
-				_ = r.touchLock()
+			if usageEvery > 0 {
+				r.maybePollUsage(quiet)
 			}
 		}
 	}

@@ -191,13 +191,10 @@ $sid = (.\bin\ctm.exe -json | ConvertFrom-Json).by_session |
 
 ### Windows で常駐させる
 
-`bin\ctm-record.vbs` をスタートアップフォルダに置くと、ログオン時にコンソールウィンドウなしで起動する。
-
-```powershell
-copy bin\ctm-record.vbs "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\"
-```
-
-やめるときはそのファイルを消す。
+CtmMonitor の右クリックメニュー →「**Windows 起動時に開始**」にチェックを入れる。
+実行中の自分の絶対パスでスタートアップに登録するので、どこに clone しても動く。
+CtmMonitor は起動時にレコーダーが止まっていれば自動で起こし、クラッシュも監視して
+自動復旧する（証跡は `~/.ctm/crash.log`）。
 
 ### 制御
 

@@ -93,6 +93,10 @@ type UsageResponse struct {
 }
 
 func credentialsPath() string {
+	// projects と同じく CLAUDE_CONFIG_DIR を尊重する（カスタム構成のマシン対応）
+	if v := os.Getenv("CLAUDE_CONFIG_DIR"); v != "" {
+		return filepath.Join(v, ".credentials.json")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return filepath.Join(".claude", ".credentials.json")

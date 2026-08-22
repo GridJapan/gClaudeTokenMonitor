@@ -305,39 +305,53 @@ static class Store
 
     static DateTime lastRestartTry = DateTime.MinValue;
 
-    /// <summary>クラッシュ監視。正常停止（ctm stop = lock 消滅）は尊重して何もしない。
-    /// lock が残っているのに応答が無いときだけ、証跡を crash.log に残して再起動する。
-    /// ハング（プロセスは居るが heartbeat が止まっている）は強制終了してから再起動。</summary>
+    /// <summary>起動直後の再起動抑止。レコーダーを起こした側が呼ぶ。</summary>
+    public static void NoteRestart() { lastRestartTry = DateTime.Now; }
+
+    /// <summary>クラッシュ監視。判定は必ず生の状態（キャッシュ無し）で行う —
+    /// 1 秒キャッシュのせいで、起こした直後の健康なレコーダーを「死」と誤認して
+    /// 殺す事故が起きるため。Kill はプロセス名が ctm のときだけ（PID 再利用対策）。</summary>
     public static void Supervise()
     {
-        if (RecorderAlive()) return;
-        string lockp = Path.Combine(Root, "record.lock");
-        if (!File.Exists(lockp)) return;                      // 正常停止
-        if ((DateTime.Now - lastRestartTry).TotalSeconds < 30) return;  // 再試行は 30 秒間隔
+        if (RecorderAliveRaw()) { aliveLastTrue = DateTime.Now; aliveCached = true; return; }
+        if ((DateTime.Now - lastRestartTry).TotalSeconds < 30) return;   // 再試行は 30 秒間隔
         lastRestartTry = DateTime.Now;
 
-        string txt = ReadAllTextShared(lockp);
-        int pid = (int)Num(txt.Replace(" ", ""), "pid");
-        bool palive = PidAlive(pid);
-        LogCrash(string.Format("detect: heartbeat 応答なし (pid={0}, pid_alive={1})", pid, palive));
-        if (palive)
+        string lockp = Path.Combine(Root, "record.lock");
+        if (!File.Exists(lockp))
         {
-            try
-            {
-                Process.GetProcessById(pid).Kill();
-                LogCrash("kill: ハング中の pid " + pid + " を強制終了した");
-            }
-            catch (Exception ex) { LogCrash("kill 失敗: " + ex.Message); }
+            // ロックが無い = 正常停止 or 初回起動失敗。アプリが生きている以上、
+            // 記録は動いているべきなので起こし直す（完全に止めるにはアプリを終了）
+            LogCrash("detect: レコーダー停止（ロック無し）— 起動する");
+            Run("record -quiet", false);
+            return;
         }
+
+        string flat = ReadAllTextShared(lockp).Replace(" ", "");
+        int pid = (int)Num(flat, "pid");
+        LogCrash(string.Format("detect: heartbeat 応答なし (pid={0})", pid));
+        try
+        {
+            var pr = Process.GetProcessById(pid);
+            if (!pr.HasExited)
+            {
+                // PID は OS が再利用する。ctm 以外なら絶対に殺さない
+                if (pr.ProcessName.Equals("ctm", StringComparison.OrdinalIgnoreCase))
+                {
+                    pr.Kill();
+                    pr.WaitForExit(5000);   // 掴んでいるロックが解放されるのを待つ
+                    LogCrash("kill: ハング中の ctm (pid " + pid + ") を強制終了した");
+                }
+                else
+                {
+                    LogCrash("skip: pid " + pid + " は " + pr.ProcessName + "（PID 再利用）— 殺さずロックの失効を待つ");
+                    return;
+                }
+            }
+        }
+        catch { /* プロセス消滅 = クラッシュ。そのまま再起動へ */ }
         Run("record -quiet", false);
         LogCrash("restart: ctm record を再起動した");
-    }
-
-    static bool PidAlive(int pid)
-    {
-        if (pid <= 0) return false;
-        try { return !Process.GetProcessById(pid).HasExited; }
-        catch { return false; }
     }
 
     static void LogCrash(string msg)
@@ -348,6 +362,13 @@ static class Store
                 DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " [UI] " + msg + "\r\n");
         }
         catch { }
+    }
+
+    static bool PidAlive(int pid)
+    {
+        if (pid <= 0) return false;
+        try { return !Process.GetProcessById(pid).HasExited; }
+        catch { return false; }
     }
 
     static bool RecorderAliveRaw()
@@ -628,7 +649,8 @@ class CompactForm : Form
                     string vbs = "' CtmMonitor 自動起動（このファイルを消せば解除）\r\n"
                         + "CreateObject(\"WScript.Shell\").Run " + q3
                         + Application.ExecutablePath + q3 + ", 0, False\r\n";
-                    File.WriteAllText(StartupScriptPath, vbs);
+                    // WSH は ANSI で読む。UTF-8 だと日本語ユーザー名のパスが壊れる
+                    File.WriteAllText(StartupScriptPath, vbs, Encoding.Default);
                 }
                 autorun.Checked = File.Exists(StartupScriptPath);
             }
@@ -1645,7 +1667,8 @@ class DetailForm : Form
     void LoadDayCore()
     {
         DateTime day;
-        if (!DateTime.TryParse(dayBox.SelectedItem as string, out day)) return;
+        if (!DateTime.TryParseExact(dayBox.SelectedItem as string, "yyyy-MM-dd",
+                CultureInfo.InvariantCulture, DateTimeStyles.None, out day)) return;
 
         limitsView.BeginUpdate();
         limitsView.Items.Clear();
@@ -1948,8 +1971,12 @@ class TrayApp : ApplicationContext
         compact.PlaceBottomRight();
         compact.Show();
 
-        // 記録が止まっていれば起こす。
-        if (!Store.RecorderAlive()) Store.Run("record -quiet", false);
+        // 記録が止まっていれば起こす。直後に Supervise が誤検知で殺さないよう印を付ける
+        if (!Store.RecorderAlive())
+        {
+            Store.Run("record -quiet", false);
+            Store.NoteRestart();
+        }
 
         tip.Interval = 30000;
         tip.Tick += delegate { UpdateTip(); };
@@ -1981,8 +2008,14 @@ class TrayApp : ApplicationContext
     }
 
     // アイコンファイルを持たずに済ませる。使用率の色で塗った丸を描く。
+    // Icon.FromHandle の HICON は Dispose では解放されず、30 秒ごとに作ると
+    // 既定の GDI 上限 (10000) を数日で食い潰す。色ごとに一度だけ作って使い回す。
+    static readonly Dictionary<int, Icon> iconCache = new Dictionary<int, Icon>();
+
     public static Icon BuildIcon(Color c)
     {
+        Icon cached;
+        if (iconCache.TryGetValue(c.ToArgb(), out cached)) return cached;
         using (var bmp = new Bitmap(32, 32))
         {
             using (var g = Graphics.FromImage(bmp))
@@ -1993,7 +2026,9 @@ class TrayApp : ApplicationContext
                 using (var b = new SolidBrush(Color.FromArgb(24, 23, 28)))
                     g.FillEllipse(b, 10, 10, 12, 12);
             }
-            return Icon.FromHandle(bmp.GetHicon());
+            var ic = Icon.FromHandle(bmp.GetHicon());
+            iconCache[c.ToArgb()] = ic;
+            return ic;
         }
     }
 
