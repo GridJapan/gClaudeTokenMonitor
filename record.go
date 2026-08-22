@@ -173,13 +173,21 @@ func (r *Recorder) touchLock() error {
 		return err
 	}
 	if r.lockFile != nil {
-		if _, err := r.lockFile.Seek(0, 0); err != nil {
-			return err
+		// Truncate → Write だと空になる瞬間があり、30fps で監視している UI が
+		// 「記録停止中」を誤検知して点滅する。固定長に空白パディングして
+		// 先頭から 1 回で書けば、読者は常に完全な JSON を見る。
+		const lockLen = 256
+		if len(b) < lockLen {
+			pad := make([]byte, lockLen)
+			copy(pad, b)
+			for i := len(b); i < lockLen; i++ {
+				pad[i] = ' '
+			}
+			pad[lockLen-1] = '
+'
+			b = pad
 		}
-		if err := r.lockFile.Truncate(0); err != nil {
-			return err
-		}
-		if _, err := r.lockFile.Write(b); err != nil {
+		if _, err := r.lockFile.WriteAt(b, 0); err != nil {
 			return err
 		}
 		return r.lockFile.Sync()
