@@ -24,10 +24,16 @@ type Scanner struct {
 	PathTTL     time.Duration
 	pathCache   []string
 	pathCacheAt time.Time
+
+	// prompts holds, per session log, the most recent human instruction seen
+	// while streaming the file. Each assistant entry is stamped with it, so
+	// the archive can say which instruction a message was serving.
+	prompts map[string]string
 }
 
 func NewScanner(root string, since time.Time) *Scanner {
-	return &Scanner{Root: root, Since: since, offsets: map[string]int64{}}
+	return &Scanner{Root: root, Since: since,
+		offsets: map[string]int64{}, prompts: map[string]string{}}
 }
 
 // Scan reads everything appended since the previous call and hands each new
@@ -84,10 +90,15 @@ func (s *Scanner) readFrom(path string, off int64, project string, emit func(Ent
 			break
 		}
 		consumed += int64(len(line))
+		if txt, isPrompt := ParsePrompt(line); isPrompt {
+			s.prompts[path] = TruncatePrompt(txt, 200)
+			continue
+		}
 		e, key, ok := ParseLine(line, project)
 		if !ok {
 			continue
 		}
+		e.Prompt = s.prompts[path]
 		if !s.Since.IsZero() && e.TS.Before(s.Since) {
 			continue
 		}

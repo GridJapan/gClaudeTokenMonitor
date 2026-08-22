@@ -65,6 +65,9 @@ type recEvent struct {
 	Total   int     `json:"total"`
 	Cost    float64 `json:"cost_usd"`
 	Priced  bool    `json:"priced"`
+	// Prompt は必ず最後に置く。値に "total": のような文字列が入っても、
+	// 素朴な先頭一致パーサ（UI 側）が実フィールドを先に見つけられるように。
+	Prompt string `json:"prompt,omitempty"`
 }
 
 func defaultRecordDir() string {
@@ -280,8 +283,8 @@ func (r *Recorder) rotate(day string) error {
 		fmt.Fprintf(r.mdw, "# %s のトークン消費\n\n"+
 			"1 行 = 重複排除後の課金単位 1 件。全セッションを対象に自動記録。\n\n"+
 			"| 時刻 | セッション | 作業ディレクトリ | モデル | input | cache-write 5m | "+
-			"cache-write 1h | cache-read | output | 合計 | コスト |\n"+
-			"|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|\n", day)
+			"cache-write 1h | cache-read | output | 合計 | コスト | 指示 |\n"+
+			"|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|\n", day)
 	}
 	return nil
 }
@@ -333,7 +336,7 @@ func (r *Recorder) write(e Entry) error {
 		CWDName: e.Project, Model: e.Model,
 		Input: e.Input, CW5m: e.CacheWrite5m, CW1h: e.CacheWrite1h,
 		CRead: e.CacheRead, Output: e.Output, Total: e.Total(),
-		Cost: e.Cost, Priced: e.Known,
+		Cost: e.Cost, Priced: e.Known, Prompt: e.Prompt,
 	}
 	b, err := json.Marshal(rec)
 	if err != nil {
@@ -343,11 +346,17 @@ func (r *Recorder) write(e Entry) error {
 		return err
 	}
 	r.evw.WriteByte('\n')
-	_, err2 := fmt.Fprintf(r.mdw, "| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | $%.6f |\n",
+	_, err2 := fmt.Fprintf(r.mdw, "| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | $%.6f | %s |\n",
 		e.TS.Format("15:04:05"), trunc(e.Session, 8), e.Project, e.Model,
 		comma(e.Input), comma(e.CacheWrite5m), comma(e.CacheWrite1h),
-		comma(e.CacheRead), comma(e.Output), comma(e.Total()), e.Cost)
+		comma(e.CacheRead), comma(e.Output), comma(e.Total()), e.Cost,
+		mdSafe(TruncatePrompt(e.Prompt, 60)))
 	return err2
+}
+
+// mdSafe keeps a prompt from breaking the Markdown table.
+func mdSafe(s string) string {
+	return strings.ReplaceAll(s, "|", "\u2502")
 }
 
 func (r *Recorder) logf(format string, args ...any) {

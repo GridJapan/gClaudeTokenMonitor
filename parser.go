@@ -27,6 +27,7 @@ type Entry struct {
 	Project string
 	Session string
 	Key     string // dedup key: message.id + requestId
+	Prompt  string // 直前の人間の指示の先頭 200 文字（スキャナが紐付ける）
 	Usage
 	Cost  float64
 	Known bool // model price was found
@@ -59,6 +60,69 @@ type rawLine struct {
 }
 
 var usageMarker = []byte(`"usage"`)
+
+var (
+	userMarker    = []byte(`"type":"user"`)
+	toolUseMarker = []byte(`"tool_use_id"`)
+)
+
+type rawUserLine struct {
+	Type    string `json:"type"`
+	IsMeta  bool   `json:"isMeta"`
+	Message struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	} `json:"message"`
+}
+
+// ParsePrompt extracts the human instruction text from a user line. Tool
+// results, meta rows, and harness wrappers are not instructions and return
+// ok=false; only text a person actually typed comes back.
+func ParsePrompt(line []byte) (string, bool) {
+	if !bytes.Contains(line, userMarker) || bytes.Contains(line, toolUseMarker) {
+		return "", false
+	}
+	var r rawUserLine
+	if json.Unmarshal(line, &r) != nil || r.Type != "user" || r.IsMeta {
+		return "", false
+	}
+	c := r.Message.Content
+	text := ""
+	if len(c) > 0 && c[0] == '"' {
+		json.Unmarshal(c, &text)
+	} else if len(c) > 0 && c[0] == '[' {
+		var blocks []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(c, &blocks) == nil {
+			for _, b := range blocks {
+				if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
+					text = b.Text
+					break
+				}
+			}
+		}
+	}
+	text = strings.TrimSpace(text)
+	if text == "" ||
+		strings.HasPrefix(text, "<") || // <command-name> や <system-reminder> の包み
+		strings.HasPrefix(text, "[Request interrupted") ||
+		strings.HasPrefix(text, "Caveat:") {
+		return "", false
+	}
+	return text, true
+}
+
+// TruncatePrompt keeps the first n characters (runes, not bytes) on one line.
+func TruncatePrompt(s string, n int) string {
+	s = strings.NewReplacer("\r", " ", "\n", " ", "\t", " ").Replace(s)
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
+}
 
 // ParseLine turns a JSONL line into an Entry. The second return value is the
 // dedup key; ok is false when the line carries no billable usage.

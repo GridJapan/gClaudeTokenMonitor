@@ -539,6 +539,7 @@ type eventOut struct {
 	Total   int     `json:"total"`
 	Cost    float64 `json:"cost_usd"`
 	Priced  bool    `json:"priced"`
+	Prompt  string  `json:"prompt,omitempty"`
 }
 
 // emitEvents writes one NDJSON line per deduplicated message, oldest first.
@@ -561,6 +562,7 @@ func emitEvents(s *Store) {
 			Total:   e.Total(),
 			Cost:    e.Cost,
 			Priced:  e.Known,
+			Prompt:  e.Prompt,
 		})
 	}
 	os.Stdout.Write(asciiEscape(buf.Bytes()))

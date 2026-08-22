@@ -76,3 +76,31 @@ func TestFilterPrefixAndPassthrough(t *testing.T) {
 		t.Fatal("unfiltered mode dropped an entry")
 	}
 }
+
+func TestParsePrompt(t *testing.T) {
+	cases := []struct {
+		line string
+		want string
+		ok   bool
+	}{
+		{`{"type":"user","message":{"role":"user","content":"計測して"}}`, "計測して", true},
+		{`{"type":"user","message":{"role":"user","content":[{"type":"text","text":"表を作れ"}]}}`, "表を作れ", true},
+		{`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"x"}]}}`, "", false},
+		{`{"type":"user","isMeta":true,"message":{"role":"user","content":"meta"}}`, "", false},
+		{`{"type":"user","message":{"role":"user","content":"<command-name>/foo</command-name>"}}`, "", false},
+		{`{"type":"assistant","message":{"role":"assistant","content":"x"}}`, "", false},
+	}
+	for i, c := range cases {
+		got, ok := ParsePrompt([]byte(c.line))
+		if ok != c.ok || got != c.want {
+			t.Errorf("case %d: got (%q,%v) want (%q,%v)", i, got, ok, c.want, c.ok)
+		}
+	}
+	long := make([]rune, 0, 300)
+	for i := 0; i < 300; i++ {
+		long = append(long, 'あ')
+	}
+	if got := TruncatePrompt(string(long), 200); len([]rune(got)) != 200 {
+		t.Errorf("truncate: got %d runes", len([]rune(got)))
+	}
+}
