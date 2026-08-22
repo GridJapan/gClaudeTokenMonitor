@@ -1469,8 +1469,8 @@ class DetailForm : Form
 
         Setup(limitsView, new[] { "時刻", "窓", "使用率", "リセットまで", "実測メッセージ", "実測トークン", "実測コスト" },
             new[] { 90, 150, 80, 110, 120, 140, 110 });
-        Setup(eventsView, new[] { "時刻", "セッション", "作業ディレクトリ", "モデル", "cache-read", "output", "合計", "コスト" },
-            new[] { 90, 90, 190, 150, 110, 90, 110, 100 });
+        Setup(eventsView, new[] { "時刻", "セッション", "作業ディレクトリ", "モデル", "cache-read", "output", "合計", "コスト", "指示（先頭200字）" },
+            new[] { 80, 80, 140, 130, 100, 80, 100, 90, 380 });
 
         t1.Controls.Add(limitsView);
         t2.Controls.Add(eventsView);
@@ -1554,6 +1554,7 @@ class DetailForm : Form
             it.SubItems.Add(((long)FieldNum(line, "output")).ToString("N0"));
             it.SubItems.Add(((long)FieldNum(line, "total")).ToString("N0"));
             it.SubItems.Add(Store.Money(FieldNum(line, "cost_usd")));
+            it.SubItems.Add(FieldStr(line, "prompt"));
             eventsView.Items.Add(it);
         }
         eventsView.EndUpdate();
@@ -1572,8 +1573,15 @@ class DetailForm : Form
         int i = line.IndexOf(k, StringComparison.Ordinal);
         if (i < 0) return "";
         i += k.Length;
-        int j = line.IndexOf('"', i);
-        return j < 0 ? "" : Decode(line.Substring(i, j - i));
+        // 値の中の \" を終端と間違えない（指示文には引用符が普通に入る）
+        int j = i;
+        while (j < line.Length)
+        {
+            if (line[j] == '"' && line[j - 1] != '\\') break;
+            j++;
+        }
+        if (j >= line.Length) return "";
+        return Decode(line.Substring(i, j - i)).Replace("\\\"", "\"");
     }
 
     static string Decode(string s)
