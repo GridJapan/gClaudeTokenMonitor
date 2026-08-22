@@ -491,8 +491,13 @@ class CompactForm : Form
     // ---- 水の物理（ウィンドウを動かすと揺れる） ------------------------
     // 水面の傾き slosh は減衰バネ。ウィンドウの水平加速度が外力になり、
     // 手を離すと固有振動でちゃぷちゃぷ戻る。bob は縦揺れ、chop は撹拌量。
-    float slosh, sloshVel;                    // 傾き（px/px）とその速度
-    float bob, bobVel;                        // 水位の上下オフセット
+    // 実際の水槽と同じく、揺れを固有モードの重ね合わせで表す。
+    //   m1: 基本モード cos(πx/W)  — 片側に寄る。周期が長く、減衰が浅い
+    //   m2: 対称モード cos(2πx/W) — 中央が跳ねる。縦揺すりで励起（Faraday 波）
+    //   m3: 高次モード cos(3πx/W) — 細かい返し波。速く、すぐ収まる
+    // 高いモードほど固有振動数が高く減衰が速い、という実物の性質に合わせる。
+    float m1, m1v, m2, m2v, m3, m3v;
+    float bob, bobVel;                        // 水位全体の上下（慣性）
     float chop;                               // 波の荒れ 0..1（振幅と位相速度に乗る）
     Point lastLoc;                            // 前フレームのウィンドウ位置
     bool haveLastLoc;
@@ -565,7 +570,7 @@ class CompactForm : Form
                 (float)(rng.NextDouble() * 1.6 - 0.8),
                 (float)(-0.6 - rng.NextDouble() * 1.8),
                 0f, (float)(30 + rng.NextDouble() * 25),
-                (float)(1.5 + rng.NextDouble() * 2.2) });
+                (float)(1.5 + rng.NextDouble() * 2.2), 0f });
         floats.Add(new object[] { "+" + Store.Tokens(delta), 1f });
         if (floats.Count > 3) floats.RemoveAt(0);
     }
@@ -592,22 +597,57 @@ class CompactForm : Form
         float ax = dx - winVX, ay = dy - winVY;   // 加速度
         winVX = dx; winVY = dy;
 
-        // 傾き: 右に加速すると慣性で水が左に寄る（左が高くなる）。
-        // 減衰バネなので、手を離すと数回ちゃぷちゃぷ振動して収まる。
-        sloshVel = sloshVel * 0.90f - slosh * 0.16f + ax * 0.012f;
-        slosh += sloshVel;
-        if (slosh > 0.35f) { slosh = 0.35f; sloshVel *= -0.4f; }   // 壁で跳ね返る
-        if (slosh < -0.35f) { slosh = -0.35f; sloshVel *= -0.4f; }
+        // --- 水のモード物理 -------------------------------------------
+        // 各モードは減衰振動子: v = v*減衰 - x*ω² + 外力。
+        // ω²: m1 0.040 < m2 0.095 < m3 0.170（高いモードほど速い）
+        // 減衰: m1 0.955 > m2 0.925 > m3 0.885（高いモードほど早く静まる）
 
-        // 縦揺れ: 下に動かすと水が取り残されて相対的に持ち上がる
-        bobVel = bobVel * 0.88f - bob * 0.18f - dy * 0.10f - ay * 0.05f;
+        // 基本モード: 水平加速度で励起。右に加速→慣性で水が左に寄る
+        m1v = m1v * 0.955f - m1 * 0.040f - ax * 0.85f;
+        m1 += m1v;
+        if (m1 > 30f) { m1 = 30f; m1v *= -0.35f; }      // 壁に当たって跳ね返る
+        if (m1 < -30f) { m1 = -30f; m1v *= -0.35f; }
+
+        // 返し波: 同じ外力で逆向きに少し立ち、速く収まる。
+        // 基本モードだけだと「板が傾く」ように見えるのを崩す
+        m3v = m3v * 0.885f - m3 * 0.170f + ax * 0.30f;
+        m3 += m3v;
+        if (m3 > 12f) m3 = 12f; else if (m3 < -12f) m3 = -12f;
+
+        // 対称モード: 縦の加速度で励起（上下に揺すると中央がぼよんと跳ねる）
+        m2v = m2v * 0.925f - m2 * 0.095f - ay * 0.55f - dy * 0.10f;
+        m2 += m2v;
+        if (m2 > 18f) { m2 = 18f; m2v *= -0.35f; }
+        if (m2 < -18f) { m2 = -18f; m2v *= -0.35f; }
+
+        // 水位全体の慣性: 窓を下げると水が取り残されて相対的に持ち上がる
+        bobVel = bobVel * 0.90f - bob * 0.14f - dy * 0.22f - ay * 0.06f;
         bob += bobVel;
-        if (bob > 14f) bob = 14f; else if (bob < -14f) bob = -14f;
+        if (bob > 16f) bob = 16f; else if (bob < -16f) bob = -16f;
 
-        // 撹拌: 動かした勢いぶん波が荒れて、止めると静まる
-        chop += Math.Min(0.5f, (Math.Abs(dx) + Math.Abs(dy)) * 0.015f);
-        chop *= 0.94f;
-        if (chop > 1.5f) chop = 1.5f;
+        // 撹拌: 動かした勢いで細波が荒れ、止めると静まる
+        chop += Math.Min(0.6f, (Math.Abs(dx) + Math.Abs(dy)) * 0.02f);
+        chop *= 0.95f;
+        if (chop > 1.6f) chop = 1.6f;
+
+        // 強い縦ジャークでしぶきが跳ねる。水面の山から上向きに飛び、重力で戻る
+        float jolt = Math.Abs(ay) + Math.Abs(dy) * 0.5f;
+        if (jolt > 6f && parts.Count < 140)   // 揺すり続けても粒子を溜め込みすぎない
+        {
+            float wl = WaterLevel() + bob;
+            int n = Math.Min(12, (int)(jolt * 0.6f));
+            for (int i = 0; i < n; i++)
+            {
+                float sx = (float)(rng.NextDouble() * Width);
+                parts.Add(new float[] {
+                    sx, wl - 2f,
+                    (float)(rng.NextDouble() * 2.4 - 1.2) + winVX * 0.12f,
+                    (float)(-(1.2 + rng.NextDouble() * 2.8)) - Math.Max(0, -dy) * 0.10f,
+                    0f, (float)(40 + rng.NextDouble() * 25),
+                    (float)(1.2 + rng.NextDouble() * 1.6),
+                    1f });                                   // type 1 = しぶき
+            }
+        }
 
         waterPhase += 0.05 + punch * 0.5 + chop * 0.25;
 
@@ -619,11 +659,21 @@ class CompactForm : Form
         if (punch > 0.001f) punch *= 0.88f; else punch = 0f;
         if (shimmerT >= 0f) { shimmerT += 0.04f; if (shimmerT > 1f) shimmerT = -1f; }
 
+        float surface = WaterLevel() + bob;
         for (int i = parts.Count - 1; i >= 0; i--)
         {
             var pt = parts[i];
-            pt[0] += pt[2]; pt[1] += pt[3]; pt[3] *= 0.985f; pt[4] += 1f;
-            if (pt[4] >= pt[5]) parts.RemoveAt(i);
+            pt[0] += pt[2]; pt[1] += pt[3]; pt[4] += 1f;
+            bool droplet = pt.Length > 7 && pt[7] >= 1f;
+            if (droplet) pt[3] += 0.22f;          // しぶきは重力で放物線を描く
+            else pt[3] *= 0.985f;                 // キラキラは空気抵抗で漂う
+            bool dead = pt[4] >= pt[5];
+            if (droplet && pt[3] > 0f && pt[1] > surface + 3f)
+            {
+                dead = true;                      // 着水。ごく小さく波を立てる
+                chop = Math.Min(1.6f, chop + 0.02f);
+            }
+            if (dead) parts.RemoveAt(i);
         }
         for (int i = floats.Count - 1; i >= 0; i--)
         {
@@ -692,12 +742,17 @@ class CompactForm : Form
     }
 
     /// <summary>水槽の背景。5 時間制限の使用率が水位になり、水面が揺れる。</summary>
-    void PaintWater(Graphics g)
+    float WaterLevel()
     {
         double pct = 0;
         foreach (var x in samples) if (x.Key == "session") pct = x.Percent;
         float level = (float)(Height * (1.0 - Math.Min(pct, 100) / 100.0));
-        level = Math.Max(16, Math.Min(Height - 10, level));
+        return Math.Max(16, Math.Min(Height - 10, level));
+    }
+
+    void PaintWater(Graphics g)
+    {
+        float level = WaterLevel();
 
         // 奥の層（薄く・ゆっくり・逆位相）と手前の層で立体感を出す
         DrawWaveFill(g, level - 2, 4.0f, 0.040f, waterPhase * 0.7 + 2.1,
@@ -723,9 +778,12 @@ class CompactForm : Form
 
     float SurfaceY(float level, float x, float amp, float k, double phase)
     {
+        float u = x / Width;                       // 0..1
         float a = amp * (1f + chop * 1.8f);
         return level + bob
-            + slosh * (x - Width / 2f)
+            + m1 * (float)Math.Cos(Math.PI * u)          // 片側に寄る（曲面）
+            + m2 * (float)Math.Cos(2 * Math.PI * u)      // 中央が跳ねる
+            + m3 * (float)Math.Cos(3 * Math.PI * u)      // 細かい返し波
             + a * (float)Math.Sin(x * k + phase)
             + a * 0.55f * (float)Math.Sin(x * k * 2.6 - phase * 1.6);
     }
@@ -739,7 +797,7 @@ class CompactForm : Form
         pts.Add(new PointF(Width, SurfaceY(level, Width, amp, k, phase)));
         pts.Add(new PointF(Width, Height));
         pts.Add(new PointF(0, Height));
-        float rise = amp * 3 + Math.Abs(slosh) * Width / 2f + Math.Abs(bob) + 4;
+        float rise = amp * 3 + Math.Abs(m1) + Math.Abs(m2) + Math.Abs(m3) + Math.Abs(bob) + 6;
         var rect = new RectangleF(0, Math.Max(0, level - rise), Width,
             Math.Max(1, Height - level + rise));
         using (var lg = new LinearGradientBrush(rect, top, bottom, LinearGradientMode.Vertical))
@@ -846,9 +904,11 @@ class CompactForm : Form
         {
             var pt = parts[i];
             float life = 1f - pt[4] / pt[5];
-            float tw = 0.7f + 0.3f * (float)Math.Sin(pt[4] * 0.8);
+            bool droplet = pt.Length > 7 && pt[7] >= 1f;
+            float tw = droplet ? 1f : 0.7f + 0.3f * (float)Math.Sin(pt[4] * 0.8);
             int a = (int)(255 * life * tw);
-            Color c = i % 3 == 0 ? Color.White
+            Color c = droplet ? Color.FromArgb(185, 220, 255)
+                : i % 3 == 0 ? Color.White
                 : i % 3 == 1 ? Theme.Accent : Color.FromArgb(240, 200, 120);
             float sz = pt[6] * (0.6f + 0.4f * life);
             using (var b = new SolidBrush(Color.FromArgb(Math.Max(0, Math.Min(255, a)), c)))
