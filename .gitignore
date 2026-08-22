@@ -1,0 +1,15 @@
+# ビルド生成物
+bin/
+*.exe
+*.exe~
+
+# 計測データ（実セッションの中身が入るため公開しない）
+measure/
+data/
+*.ndjson
+
+# エディタ / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
