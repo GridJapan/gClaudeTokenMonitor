@@ -487,6 +487,16 @@ class CompactForm : Form
     int tier;                                 // 直近バーストの強度 1..4
     float shimmerT = -1f;                     // ハイライト帯の進行 0..1（-1 = 停止）
     double waterPhase;                        // 水面の位相
+
+    // ---- 水の物理（ウィンドウを動かすと揺れる） ------------------------
+    // 水面の傾き slosh は減衰バネ。ウィンドウの水平加速度が外力になり、
+    // 手を離すと固有振動でちゃぷちゃぷ戻る。bob は縦揺れ、chop は撹拌量。
+    float slosh, sloshVel;                    // 傾き（px/px）とその速度
+    float bob, bobVel;                        // 水位の上下オフセット
+    float chop;                               // 波の荒れ 0..1（振幅と位相速度に乗る）
+    Point lastLoc;                            // 前フレームのウィンドウ位置
+    bool haveLastLoc;
+    float winVX, winVY;                       // 前フレームのウィンドウ速度
     readonly List<float[]> parts = new List<float[]>();   // x,y,vx,vy,age,maxAge,size
     readonly List<object[]> floats = new List<object[]>(); // [text, life]
     readonly Random rng = new Random();
@@ -495,7 +505,7 @@ class CompactForm : Form
     readonly Font fT8 = new Font("Yu Gothic UI", 8f);
     readonly Font fT9b = new Font("Yu Gothic UI", 9f, FontStyle.Bold);
     readonly Font fMid11 = new Font("Yu Gothic UI", 11f, FontStyle.Bold);
-    readonly Font fHuge = new Font("Yu Gothic UI", 30f, FontStyle.Bold);
+    readonly Font fHuge = new Font("Yu Gothic UI", 36f, FontStyle.Bold);
     Font fitFont;
     int fitLen;
 
@@ -562,10 +572,44 @@ class CompactForm : Form
 
     void FxTick(object o, EventArgs e)
     {
-        if (Store.LayoutMode != Store.Layout.Big || !Visible
-            || WindowState == FormWindowState.Minimized) return;
+        // ウィンドウの動きは常に追跡する（Big 以外で動かした分が
+        // 切り替え直後に巨大な衝撃として乗らないように）。
+        if (!haveLastLoc) { lastLoc = Location; haveLastLoc = true; }
+        float dx = Location.X - lastLoc.X;
+        float dy = Location.Y - lastLoc.Y;
+        lastLoc = Location;
 
-        waterPhase += 0.05 + punch * 0.5;
+        if (Store.LayoutMode != Store.Layout.Big || !Visible
+            || WindowState == FormWindowState.Minimized)
+        {
+            winVX = winVY = 0;
+            return;
+        }
+
+        // 1 フレームの移動量を制限（モニタ間ジャンプ等の異常値を吸収）
+        if (dx > 40) dx = 40; else if (dx < -40) dx = -40;
+        if (dy > 40) dy = 40; else if (dy < -40) dy = -40;
+        float ax = dx - winVX, ay = dy - winVY;   // 加速度
+        winVX = dx; winVY = dy;
+
+        // 傾き: 右に加速すると慣性で水が左に寄る（左が高くなる）。
+        // 減衰バネなので、手を離すと数回ちゃぷちゃぷ振動して収まる。
+        sloshVel = sloshVel * 0.90f - slosh * 0.16f + ax * 0.012f;
+        slosh += sloshVel;
+        if (slosh > 0.35f) { slosh = 0.35f; sloshVel *= -0.4f; }   // 壁で跳ね返る
+        if (slosh < -0.35f) { slosh = -0.35f; sloshVel *= -0.4f; }
+
+        // 縦揺れ: 下に動かすと水が取り残されて相対的に持ち上がる
+        bobVel = bobVel * 0.88f - bob * 0.18f - dy * 0.10f - ay * 0.05f;
+        bob += bobVel;
+        if (bob > 14f) bob = 14f; else if (bob < -14f) bob = -14f;
+
+        // 撹拌: 動かした勢いぶん波が荒れて、止めると静まる
+        chop += Math.Min(0.5f, (Math.Abs(dx) + Math.Abs(dy)) * 0.015f);
+        chop *= 0.94f;
+        if (chop > 1.5f) chop = 1.5f;
+
+        waterPhase += 0.05 + punch * 0.5 + chop * 0.25;
 
         // スプリング補間: くるくる回りながら現在値に吸い付く
         vel = vel * 0.82 + (target - shown) * 0.16;
@@ -677,11 +721,13 @@ class CompactForm : Form
         }
     }
 
-    static float SurfaceY(float level, float x, float amp, float k, double phase)
+    float SurfaceY(float level, float x, float amp, float k, double phase)
     {
-        return level
-            + amp * (float)Math.Sin(x * k + phase)
-            + amp * 0.55f * (float)Math.Sin(x * k * 2.6 - phase * 1.6);
+        float a = amp * (1f + chop * 1.8f);
+        return level + bob
+            + slosh * (x - Width / 2f)
+            + a * (float)Math.Sin(x * k + phase)
+            + a * 0.55f * (float)Math.Sin(x * k * 2.6 - phase * 1.6);
     }
 
     void DrawWaveFill(Graphics g, float level, float amp, float k, double phase,
@@ -693,8 +739,9 @@ class CompactForm : Form
         pts.Add(new PointF(Width, SurfaceY(level, Width, amp, k, phase)));
         pts.Add(new PointF(Width, Height));
         pts.Add(new PointF(0, Height));
-        var rect = new RectangleF(0, Math.Max(0, level - amp * 2), Width,
-            Math.Max(1, Height - level + amp * 2));
+        float rise = amp * 3 + Math.Abs(slosh) * Width / 2f + Math.Abs(bob) + 4;
+        var rect = new RectangleF(0, Math.Max(0, level - rise), Width,
+            Math.Max(1, Height - level + rise));
         using (var lg = new LinearGradientBrush(rect, top, bottom, LinearGradientMode.Vertical))
         {
             var prev2 = g.SmoothingMode;
