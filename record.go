@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -26,7 +27,7 @@ import (
 type Recorder struct {
 	Dir  string
 	sc   *Scanner
-	seen map[string]struct{}
+	seen map[string]int // dedup キー -> その日 (yyyymmdd)
 	day  string
 	ev   *os.File
 	md   *os.File
@@ -39,6 +40,7 @@ type Recorder struct {
 
 	lockFile *os.File
 	lockIntv time.Duration
+	prunedOn int
 }
 
 type recState struct {
@@ -78,10 +80,37 @@ func NewRecorder(dir, root string) (*Recorder, error) {
 			return nil, err
 		}
 	}
-	r := &Recorder{Dir: dir, sc: NewScanner(root, time.Time{}), seen: map[string]struct{}{}}
+	r := &Recorder{Dir: dir, sc: NewScanner(root, time.Time{}), seen: map[string]int{}}
 	r.loadState()
 	r.loadSeen()
 	return r, nil
+}
+
+// dayNum turns "2006-01-02" into 20060102 for cheap age comparison.
+func dayNum(d string) int {
+	n := 0
+	for _, c := range d {
+		if c >= '0' && c <= '9' {
+			n = n*10 + int(c-'0')
+		}
+	}
+	return n
+}
+
+// pruneSeen drops dedup keys older than two days. Duplicate lines are written
+// within seconds of each other, so nothing useful is lost, and a long-running
+// recorder stops growing its memory without bound.
+func (r *Recorder) pruneSeen(today int) {
+	if len(r.seen) < 20000 || today == r.prunedOn {
+		return
+	}
+	r.prunedOn = today
+	cutoff := dayNum(time.Now().AddDate(0, 0, -2).Format("2006-01-02"))
+	for k, d := range r.seen {
+		if d < cutoff {
+			delete(r.seen, k)
+		}
+	}
 }
 
 func (r *Recorder) statePath() string { return filepath.Join(r.Dir, "state.json") }
@@ -214,7 +243,7 @@ func (r *Recorder) loadSeen() {
 		for sc.Scan() {
 			var e recEvent
 			if json.Unmarshal(sc.Bytes(), &e) == nil && e.Key != "" {
-				r.seen[e.Key] = struct{}{}
+				r.seen[e.Key] = dayNum(d)
 			}
 		}
 		f.Close()
@@ -368,11 +397,13 @@ func (r *Recorder) tick() (int, error) {
 		return 0, err
 	}
 	// Only now is the batch durable, so remember the keys and keep the offsets.
+	today := dayNum(time.Now().Format("2006-01-02"))
 	for _, k := range fresh {
 		if k != "" {
-			r.seen[k] = struct{}{}
+			r.seen[k] = today
 		}
 	}
+	r.pruneSeen(today)
 	if err := r.saveState(); err != nil {
 		r.logf("saveState: %v", err)
 	}
@@ -423,11 +454,13 @@ func RunRecord(dir, root string, interval, usageEvery time.Duration, quiet bool)
 	}
 	defer r.releaseLock()
 	defer r.closeFiles()
+	// 前回の停止要求が残っていると起動直後に自死するので、掃除してから始める。
+	os.Remove(r.stopPath())
 	r.usageEvery = usageEvery
 	r.logf("start dir=%s root=%s interval=%s", dir, root, interval)
 
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 
 	if !quiet {
 		fmt.Printf("ctm record\n  記録先: %s\n  対象  : %s (全セッション)\n  間隔  : %s\n\n",

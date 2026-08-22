@@ -275,6 +275,43 @@ static class Store
                   : TokenUnit == Unit.K ? Unit.M
                   : TokenUnit == Unit.M ? Unit.Raw
                   : Unit.Auto;
+        SaveSettings();
+    }
+
+    // --- UI 設定の永続化 -------------------------------------------------
+    // ctm 本体は触らないファイルに置く。壊れていても既定値で動く。
+    static string SettingsPath { get { return Path.Combine(Root, "ui.json"); } }
+
+    public static Point WindowPos = Point.Empty;
+
+    public static void LoadSettings()
+    {
+        try
+        {
+            var txt = ReadAllTextShared(SettingsPath);
+            if (txt.Length == 0) return;
+            var u = Str(txt, "unit");
+            if (u == "K") TokenUnit = Unit.K;
+            else if (u == "M") TokenUnit = Unit.M;
+            else if (u == "RAW") TokenUnit = Unit.Raw;
+            else TokenUnit = Unit.Auto;
+            int x = (int)Num(txt, "x"), y = (int)Num(txt, "y");
+            if (x != 0 || y != 0) WindowPos = new Point(x, y);
+        }
+        catch { }
+    }
+
+    public static void SaveSettings()
+    {
+        try
+        {
+            Directory.CreateDirectory(Root);
+            File.WriteAllText(SettingsPath, string.Format(
+                CultureInfo.InvariantCulture,
+                "{{\"unit\":\"{0}\",\"x\":{1},\"y\":{2}}}",
+                UnitName, WindowPos.X, WindowPos.Y));
+        }
+        catch { }
     }
 
     public static string Tokens(long n)
@@ -338,7 +375,7 @@ class CompactForm : Form
         Icon = TrayApp.BuildIcon(Theme.Accent);
         MinimizeBox = true;
 
-        timer.Interval = 3000;
+        timer.Interval = 2000;   // Go の取り込みが 5 秒粒度なので、これで十分追随する
         timer.Tick += delegate { Reload(); };
         timer.Start();
 
@@ -356,9 +393,11 @@ class CompactForm : Form
             if (!moved && Math.Abs(dx) + Math.Abs(dy) < 4) return;
             moved = true;
             Location = new Point(Location.X + dx, Location.Y + dy);
+            Store.WindowPos = Location;
         };
         MouseUp += delegate (object o, MouseEventArgs e)
         {
+            if (moved) Store.SaveSettings();
             if (e.Button == MouseButtons.Left && dragging && !moved)
             {
                 Store.CycleUnit();      // 詳細は右クリックメニューから開く
@@ -456,6 +495,14 @@ class CompactForm : Form
     public void PlaceBottomRight()
     {
         var wa = Screen.PrimaryScreen.WorkingArea;
+        // 前回ドラッグした位置を覚えている場合はそこへ。画面外なら右下に戻す。
+        if (Store.WindowPos != Point.Empty
+            && Store.WindowPos.X > wa.Left - Width + 40 && Store.WindowPos.X < wa.Right - 40
+            && Store.WindowPos.Y > wa.Top - 10 && Store.WindowPos.Y < wa.Bottom - 40)
+        {
+            Location = Store.WindowPos;
+            return;
+        }
         Location = new Point(wa.Right - Width - 16, wa.Bottom - Height - 16);
     }
 
@@ -903,6 +950,7 @@ static class Program
                 MessageBox.Show(ex == null ? "不明なエラー" : ex.Message, "CtmMonitor",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
             };
+            Store.LoadSettings();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new TrayApp());
