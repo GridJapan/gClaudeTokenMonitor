@@ -292,6 +292,17 @@ static class Store
     // 全量パース（数 MB）を 5 回/秒やると CPU を無駄に食うので、
     // 前回読んだバイト位置を覚えて追記分だけ集計する。
     static long liveOff;
+    static List<string> lastSources = new List<string>();
+
+    /// <summary>直近の増分を出した作業ディレクトリ（1 回読むとクリア）。</summary>
+    public static string TakeLastSources()
+    {
+        if (lastSources.Count == 0) return "";
+        string src = lastSources[0];
+        if (lastSources.Count > 1) src += " ほか" + (lastSources.Count - 1);
+        lastSources = new List<string>();
+        return src;
+    }
     static DayTotal liveTot = new DayTotal();
     static string liveDay = "";
 
@@ -328,6 +339,7 @@ static class Store
             if (lastNL < 0) return liveTot;
 
             var text = Encoding.ASCII.GetString(buf, 0, lastNL + 1);
+            var srcs = new List<string>();
             foreach (var line in text.Split('\n'))
             {
                 if (line.Length < 3) continue;
@@ -336,7 +348,11 @@ static class Store
                 liveTot.Cost += Num(line, "cost_usd");
                 var sid = Str(line, "session");
                 if (sid.Length > 0) liveTot.Sessions.Add(sid);
+                // 増分の発生源 = 作業ディレクトリのみ（セッション ID は人が読めないので出さない）
+                var cw = Str(line, "cwd_name");
+                if (cw.Length > 0 && !srcs.Contains(cw)) srcs.Add(cw);
             }
+            if (srcs.Count > 0) lastSources = srcs;
             liveOff += lastNL + 1;
         }
         catch { }
@@ -939,7 +955,7 @@ class CompactForm : Form
                 0f, (float)(34 + rng.NextDouble() * 26),
                 (float)(2.6 + rng.NextDouble() * 2.6), 0f });
         }
-        floats.Add(new object[] { "+" + Store.Tokens(delta), 1f });
+        floats.Add(new object[] { "+" + Store.Tokens(delta), 1f, Store.TakeLastSources() });
         if (floats.Count > 4) floats.RemoveAt(0);
 
         // +N が昇っている間、水面が光の反射できらめき続ける
@@ -1410,11 +1426,13 @@ class CompactForm : Form
             g.DrawString(t, fT8, b, (LW - sz.Width) / 2, cy + tsz.Height / 2 - 6);
         }
 
-        // +N フロート: 1UP 風。出た瞬間が速く、減速しながらすーっと昇って消える
+        // +N フロート: 1UP 風。出た瞬間が速く、減速しながらすーっと昇って消える。
+        // 下に発生源（どの作業ディレクトリの消費か）を小さく添える
         foreach (var f in floats)
         {
             float life = (float)f[1];
             var t = (string)f[0];
+            string src = f.Length > 2 ? (string)f[2] : "";
             float rise = (float)(1 - Math.Pow(life, 0.6)) * 58f;   // ease-out で 58px 上昇
             float fy = cy - tsz.Height / 2 - 16 - rise;
             int a = (int)(255 * Math.Min(1f, life * 3f));          // 最後の 1/3 でフェード
@@ -1424,6 +1442,16 @@ class CompactForm : Form
                 g.DrawString(t, fF13, b, fx2 + 1.5f, fy + 1.5f);   // 影
             using (var b = new SolidBrush(Color.FromArgb(a, 150, 235, 170)))
                 g.DrawString(t, fF13, b, fx2, fy);                 // 明るい緑
+            if (src.Length > 0)
+            {
+                var ss = g.MeasureString(src, fT7);
+                float sx2 = cx - ss.Width / 2;
+                float sy2 = fy + sz.Height - 5;
+                using (var b = new SolidBrush(Color.FromArgb(a * 3 / 5, 0, 0, 0)))
+                    g.DrawString(src, fT7, b, sx2 + 1f, sy2 + 1f);
+                using (var b = new SolidBrush(Color.FromArgb(a * 4 / 5, 205, 220, 235)))
+                    g.DrawString(src, fT7, b, sx2, sy2);
+            }
         }
 
         // 粒子（白・アクセント・金の 3 色でまたたく）
