@@ -42,39 +42,88 @@ static uint16_t blend565(uint8_t r1, uint8_t g1, uint8_t b1,
         (uint8_t)(b1 + (b2 - b1) * a));
 }
 
+static uint16_t C_GLINT, C_SHADOW;
+
+// ---- ダーク / デイモード ------------------------------------------------
+// 画面ボタン（画面全体がボタン）で切替。既定 = ダーク（従来の見た目）。
+// デイは白背景・黒文字の系統で、水も明るい紙面に載る色に組み直す。
+// 発色重視: バックライトは両モードとも明るいまま。
+static bool  dayMode = false;
+static float modeFlash = 0.0f;       // 切替直後に "DAY"/"DARK" を出す残量
+static uint8_t BG_R = 24, BG_G = 23, BG_B = 28;   // 現在モードの背景（合成の基準）
+
 static void initColors()
 {
-    // PC 版 Theme と同じ系統。アルファ合成は事前計算して 16bit 固定色にする。
-    C_BG   = content.color565(24, 23, 28);
-    C_FG   = content.color565(236, 234, 240);
-    C_MUT  = content.color565(150, 146, 160);
-    C_WARN = content.color565(214, 139, 107);
-    C_BAD  = content.color565(201, 107, 143);
-    C_MINT = content.color565(150, 235, 170);
-    C_GOLD = content.color565(255, 224, 120);
+    if (!dayMode) {
+        // ダーク（既定・従来の見た目）: PC 版 Theme と同じ系統。
+        BG_R = 24; BG_G = 23; BG_B = 28;
+        C_BG   = content.color565(24, 23, 28);
+        C_FG   = content.color565(236, 234, 240);
+        C_MUT  = content.color565(150, 146, 160);
+        C_WARN = content.color565(214, 139, 107);
+        C_BAD  = content.color565(201, 107, 143);
+        C_MINT = content.color565(150, 235, 170);
+        C_GOLD = content.color565(255, 224, 120);
 
-    // 背景(24,23,28) に 紫(150,115,235) α0.35 / 青(96,155,245) α0.45 を重ねた色
-    C_W_PURP   = blend565(24, 23, 28, 150, 115, 235, 0.35f);
-    C_W_BLUE   = blend565(24, 23, 28, 96, 155, 245, 0.45f);
-    { // 紫の上に青: まず紫を作り、その RGB に青を重ねる
-        uint8_t pr = 24 + (uint8_t)((150 - 24) * 0.35f);
-        uint8_t pg = 23 + (uint8_t)((115 - 23) * 0.35f);
-        uint8_t pb = 28 + (uint8_t)((235 - 28) * 0.35f);
-        C_W_BOTH = blend565(pr, pg, pb, 96, 155, 245, 0.45f);
+        // 背景に 紫 α0.52 / 青 α0.65 を重ねた色（発色は濃く鮮やかに）
+        C_W_PURP   = blend565(24, 23, 28, 160, 120, 255, 0.52f);
+        C_W_BLUE   = blend565(24, 23, 28, 100, 165, 255, 0.65f);
+        { // 紫の上に青: まず紫を作り、その RGB に青を重ねる
+            uint8_t pr = 24 + (uint8_t)((160 - 24) * 0.52f);
+            uint8_t pg = 23 + (uint8_t)((120 - 23) * 0.52f);
+            uint8_t pb = 28 + (uint8_t)((255 - 28) * 0.52f);
+            C_W_BOTH = blend565(pr, pg, pb, 100, 165, 255, 0.65f);
+        }
+        // 深部はさらに濃色へ寄せて「深さ」を出す
+        C_W_PURP_D = blend565(24, 23, 28, 70, 45, 170, 0.60f);
+        C_W_BLUE_D = blend565(24, 23, 28, 40, 70, 190, 0.70f);
+        C_W_BOTH_D = blend565(25, 28, 55, 55, 65, 190, 0.65f);
+
+        C_SURF_S = content.color565(190, 225, 255);
+        C_SURF_W = content.color565(215, 185, 255);
+        C_BAR_S  = content.color565(130, 195, 255);
+        C_BAR_W  = content.color565(205, 170, 255);
+        C_BAR_S_T = blend565(24, 23, 28, 130, 195, 255, 0.30f);
+        C_BAR_W_T = blend565(24, 23, 28, 205, 170, 255, 0.30f);
+        C_LEG_S  = content.color565(160, 205, 255);
+        C_LEG_W  = content.color565(205, 175, 255);
+        C_GLINT  = C_FG;                                  // 白のきらめき
+        C_SHADOW = content.color565(10, 10, 14);          // 数字の影
+    } else {
+        // デイ: 白背景・黒文字の系統。水は紙面に載るパステル、線と文字は濃く。
+        BG_R = 245; BG_G = 244; BG_B = 248;
+        C_BG   = content.color565(245, 244, 248);
+        C_FG   = content.color565(28, 27, 33);
+        C_MUT  = content.color565(110, 108, 122);
+        C_WARN = content.color565(200, 90, 40);
+        C_BAD  = content.color565(190, 35, 90);
+        C_MINT = content.color565(10, 150, 70);
+        C_GOLD = content.color565(215, 150, 0);
+
+        C_W_PURP   = blend565(245, 244, 248, 145, 105, 240, 0.48f);
+        C_W_BLUE   = blend565(245, 244, 248, 70, 140, 250, 0.60f);
+        {
+            uint8_t pr = 245 + (uint8_t)((145 - 245) * 0.48f);
+            uint8_t pg = 244 + (uint8_t)((105 - 244) * 0.48f);
+            uint8_t pb = 248 + (uint8_t)((240 - 248) * 0.48f);
+            C_W_BOTH = blend565(pr, pg, pb, 70, 140, 250, 0.60f);
+        }
+        // 深部は濃いめに寄せる（白地では「濃い = 深い」）
+        C_W_PURP_D = blend565(245, 244, 248, 115, 75, 215, 0.62f);
+        C_W_BLUE_D = blend565(245, 244, 248, 35, 95, 230, 0.68f);
+        C_W_BOTH_D = blend565(230, 228, 245, 55, 80, 225, 0.66f);
+
+        C_SURF_S = content.color565(25, 90, 210);
+        C_SURF_W = content.color565(110, 70, 210);
+        C_BAR_S  = content.color565(30, 110, 235);
+        C_BAR_W  = content.color565(130, 80, 230);
+        C_BAR_S_T = blend565(245, 244, 248, 30, 110, 235, 0.26f);
+        C_BAR_W_T = blend565(245, 244, 248, 130, 80, 230, 0.26f);
+        C_LEG_S  = content.color565(20, 85, 200);
+        C_LEG_W  = content.color565(105, 65, 200);
+        C_GLINT  = content.color565(255, 255, 255);       // 水面の陽のきらめき
+        C_SHADOW = content.color565(205, 205, 212);       // 影は薄いグレー
     }
-    // 深部はさらに暗色へ寄せて「深さ」を出す
-    C_W_PURP_D = blend565(24, 23, 28, 55, 38, 130, 0.55f);
-    C_W_BLUE_D = blend565(24, 23, 28, 30, 52, 135, 0.60f);
-    C_W_BOTH_D = blend565(20, 22, 40, 40, 45, 140, 0.55f);
-
-    C_SURF_S = content.color565(170, 210, 255);
-    C_SURF_W = content.color565(200, 170, 255);
-    C_BAR_S  = content.color565(120, 180, 255);
-    C_BAR_W  = content.color565(190, 160, 255);
-    C_BAR_S_T = blend565(24, 23, 28, 120, 180, 255, 0.22f);
-    C_BAR_W_T = blend565(24, 23, 28, 190, 160, 255, 0.22f);
-    C_LEG_S  = content.color565(140, 190, 255);
-    C_LEG_W  = content.color565(190, 160, 255);
 }
 
 // ---- PC から届く状態 -------------------------------------------------------
@@ -101,13 +150,6 @@ static float  m2 = 0, m2v = 0;       // 中央がぼよんと跳ねる対称モ�
 static double waterPhase = 0;
 static int    glintFor = 0;
 static char   curPer[8] = "5H";
-
-// ---- ナイト / デイモード ------------------------------------------------
-// 画面ボタン（画面全体がボタン）で切替。ナイトはバックライトを絞り、
-// 数字を電球色にし、水面のきらめきを止める。切替はフェードで行う。
-static bool  night = false;
-static float briCur = 160.0f;        // バックライトの現在値（フェード用）
-static float modeFlash = 0.0f;       // 切替直後に "NIGHT"/"DAY" を出す残量
 
 struct Floaty { char txt[20]; char src[96]; float life; };
 static Floaty flo[3];
@@ -341,12 +383,12 @@ static void drawWater()
         if (iw >= 0 && iw < H) content.drawPixel(x, iw, C_SURF_W);
         if (is >= 0 && is < H) content.drawPixel(x, is, C_SURF_S);
     }
-    // 水面グリント: バースト中、5h 水面に光点がまたたく（ナイト中は消灯）
-    if (!night && glintFor > 0 && (glintFor & 1)) {
+    // 水面グリント: バースト中、5h 水面に光点がまたたく
+    if (glintFor > 0 && (glintFor & 1)) {
         for (int i = 0; i < 2; i++) {
             int x = rand() % W;
             int y = (int)surfaceY(lvS, (float)x, 1.6f, 0.085f, waterPhase) - 1;
-            if (y >= 0 && y < H) content.drawFastHLine(x, y, 2, C_FG);
+            if (y >= 0 && y < H) content.drawFastHLine(x, y, 2, C_GLINT);
         }
     }
 }
@@ -397,20 +439,25 @@ static void drawNumber()
     // 色は状態で変える: 平常=白 / 70%↑=橙 / 90%↑=赤、カウント中はミント、
     // バースト直後は金色に光って戻る（PC と同じ規則）。
     double maxPct = rx.pct5 > rx.pctw ? rx.pct5 : rx.pctw;
-    uint8_t r = 236, g = 234, b = 240;
-    if (night) { r = 255; g = 196; b = 120; }   // ナイトは電球色（青を絞る）
-    if (maxPct >= 90)      { r = 201; g = 107; b = 143; }
-    else if (maxPct >= 70) { r = 214; g = 139; b = 107; }
+    // 平常色・カウント中ミント・バースト金はモードごとの発色にする
+    uint8_t r, g, b;
+    uint8_t mr, mg, mb, gr, gg, gb;
+    if (dayMode) { r = 28; g = 27; b = 33;    mr = 10;  mg = 150; mb = 70;
+                   gr = 215; gg = 150; gb = 0; }
+    else         { r = 236; g = 234; b = 240; mr = 150; mg = 235; mb = 170;
+                   gr = 255; gg = 224; gb = 120; }
+    if (maxPct >= 90)      { r = dayMode ? 190 : 201; g = dayMode ? 35 : 107;  b = dayMode ? 90 : 143; }
+    else if (maxPct >= 70) { r = dayMode ? 200 : 214; g = dayMode ? 90 : 139;  b = dayMode ? 40 : 107; }
     float counting = (float)fmin(1.0, fabs(target - shown) / 4000.0) * 0.8f;
-    r = (uint8_t)(r + (150 - r) * counting);
-    g = (uint8_t)(g + (235 - g) * counting);
-    b = (uint8_t)(b + (170 - b) * counting);
+    r = (uint8_t)(r + (mr - r) * counting);
+    g = (uint8_t)(g + (mg - g) * counting);
+    b = (uint8_t)(b + (mb - b) * counting);
     float fl = flash > 1.0f ? 1.0f : flash;
-    r = (uint8_t)(r + (255 - r) * fl);
-    g = (uint8_t)(g + (224 - g) * fl);
-    b = (uint8_t)(b + (120 - b) * fl);
+    r = (uint8_t)(r + (gr - r) * fl);
+    g = (uint8_t)(g + (gg - g) * fl);
+    b = (uint8_t)(b + (gb - b) * fl);
     uint16_t col = content.color565(r, g, b);
-    uint16_t sh  = content.color565(10, 10, 14);
+    uint16_t sh  = C_SHADOW;
 
     content.setTextDatum(middle_left);
     int x0 = (W - (wNum + wSuf)) / 2;
@@ -470,13 +517,17 @@ static void drawFloats()
         int fy = H / 2 - 26 - (int)rise;
         int a = (int)(255 * fminf(1.0f, life * 3.0f));
         // 16bit 直塗りなので不透明度はミント→背景の補間で表す
-        uint16_t col = blend565(24, 23, 28, 150, 235, 170, a / 255.0f);
+        uint16_t col = dayMode
+            ? blend565(BG_R, BG_G, BG_B, 10, 150, 70, a / 255.0f)
+            : blend565(BG_R, BG_G, BG_B, 150, 235, 170, a / 255.0f);
         content.setTextDatum(top_center);
         content.setFont(&fonts::FreeSansBold9pt7b);
         content.setTextColor(col);
         content.drawString(flo[i].txt, W / 2, fy);
         if (flo[i].src[0]) {
-            uint16_t sc = blend565(24, 23, 28, 205, 220, 235, a / 255.0f * 0.8f);
+            uint16_t sc = dayMode
+                ? blend565(BG_R, BG_G, BG_B, 70, 80, 100, a / 255.0f * 0.9f)
+                : blend565(BG_R, BG_G, BG_B, 205, 220, 235, a / 255.0f * 0.8f);
             content.setFont(&fonts::lgfxJapanGothic_12);
             content.setTextColor(sc);
             // 収まらないときは末尾を削る
@@ -506,10 +557,12 @@ static void drawNoLink()
 {
     // 数秒データが来ない: 最後の状態は残したまま、点滅の帯で知らせる
     if ((millis() / 500) & 1) {
-        content.fillRect(0, 54, W, 20, content.color565(60, 30, 36));
+        content.fillRect(0, 54, W, 20,
+            dayMode ? content.color565(250, 215, 215) : content.color565(60, 30, 36));
         content.setTextDatum(top_center);
         content.setFont(&fonts::Font0);
-        content.setTextColor(content.color565(255, 170, 170));
+        content.setTextColor(
+            dayMode ? content.color565(175, 30, 30) : content.color565(255, 170, 170));
         content.drawString("NO LINK", W / 2, 60);
     }
 }
@@ -519,7 +572,7 @@ void setup()
 {
     auto cfg = M5.config();
     M5.begin(cfg);
-    M5.Display.setBrightness(160);
+    M5.Display.setBrightness(210);   // 発色重視で両モードとも明るく
 
     Serial.begin(115200);
 
@@ -538,14 +591,13 @@ void loop()
     uint32_t t0 = millis();
     M5.update();
 
-    // 画面ボタンでナイト / デイ切替。バックライトはフェードで移る
+    // 画面ボタンでダーク / デイ切替。パレットを組み直すだけで、
+    // バックライトは両モードとも明るいまま（発色重視）。
     if (M5.BtnA.wasClicked()) {
-        night = !night;
+        dayMode = !dayMode;
+        initColors();
         modeFlash = 1.0f;
     }
-    float briTgt = night ? 26.0f : 160.0f;
-    briCur += (briTgt - briCur) * 0.12f;
-    M5.Display.setBrightness((uint8_t)(briCur + 0.5f));
 
     pollSerial();
     updateOrientation();
@@ -587,11 +639,13 @@ void loop()
 
     // 切替直後だけモード名を出してフェードアウト
     if (modeFlash > 0.02f) {
-        uint16_t c = blend565(24, 23, 28, 255, 220, 150, modeFlash);
+        uint16_t c = dayMode
+            ? blend565(BG_R, BG_G, BG_B, 170, 110, 10, modeFlash)
+            : blend565(BG_R, BG_G, BG_B, 255, 220, 150, modeFlash);
         content.setTextDatum(top_center);
         content.setFont(&fonts::Font0);
         content.setTextColor(c);
-        content.drawString(night ? "NIGHT" : "DAY", W / 2, 18);
+        content.drawString(dayMode ? "DAY" : "DARK", W / 2, 18);
         modeFlash *= 0.94f;
     }
 
@@ -602,7 +656,7 @@ void loop()
     float prog = fminf(1.0f, fabsf(diff) / 90.0f);
     float scale = 1.0f - 0.10f * sinf(prog * (float)M_PI);
 
-    screenBuf.fillSprite(TFT_BLACK);
+    screenBuf.fillSprite(C_BG);   // 回転中に見える四隅も背景色（モード追従）
     content.pushRotateZoomWithAA(&screenBuf, W / 2.0f - 0.5f, H / 2.0f - 0.5f,
                                  ang, scale, scale);
     screenBuf.pushSprite(0, 0);
