@@ -634,10 +634,30 @@ static class Store
 /// 200ms ごとの Reload から状態 1 行 (NDJSON) を書くだけで、描画・演出・
 /// 回転はデバイス側 (atom/) が 30fps で行う。接続はバックグラウンドで探す:
 /// レジストリの Espressif (VID_303A) エントリから COM 番号を集め、
-/// ping に "ctm-atom" と答えたポートだけを採用する（他の機器を荒らさない）。</summary>
+/// ping に "ctm-atom" と答えたポートだけを採用する（他の機器を荒らさない）。
+///
+/// .NET SerialPort は使わない。ESP32-S3 の USB-Serial/JTAG は open 時の
+/// 制御線変化で**チップごとリセットされ**（USB の再列挙はしない）、その際の
+/// 中断イベントで SerialPort は内部的に壊れて以後 "port is closed" を吐き
+/// 続ける（実機で確認）。素の Win32 ハンドル + COMMTIMEOUTS なら無事。
+/// 接続手順: 1 回目の open（リセットを誘発）→ 閉じて 3 秒待つ（再起動完了）
+/// → 2 回目の open（制御線が同じ値なのでリセットされない）→ ping/hello 確認。</summary>
 static class SubMon
 {
-    static SerialPort port;
+    [System.Runtime.InteropServices.DllImport("kernel32.dll",
+        CharSet = System.Runtime.InteropServices.CharSet.Auto, SetLastError = true)]
+    static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFile(
+        string name, uint access, uint share, IntPtr sec, uint disp, uint flags, IntPtr tmpl);
+
+    [System.Runtime.InteropServices.StructLayout(
+        System.Runtime.InteropServices.LayoutKind.Sequential)]
+    struct CommTimeouts { public uint RI, RM, RC, WM, WC; }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetCommTimeouts(
+        Microsoft.Win32.SafeHandles.SafeFileHandle h, ref CommTimeouts t);
+
+    static FileStream stream;                 // 接続中のポート（null = 未接続）
     static readonly object gate = new object();
     static volatile bool connecting;
     static DateTime lastAttempt = DateTime.MinValue;
@@ -655,9 +675,9 @@ static class SubMon
         double f5, double fw, double cost, bool rec)
     {
         if (!Store.AtomEnabled) { Shutdown(); return; }
-        SerialPort p;
-        lock (gate) p = port;
-        if (p == null)
+        FileStream s;
+        lock (gate) s = stream;
+        if (s == null)
         {
             if (!connecting && (DateTime.Now - lastAttempt).TotalSeconds > 3)
             {
@@ -674,20 +694,24 @@ static class SubMon
         var ic = CultureInfo.InvariantCulture;
         string line = string.Format(ic,
             "{{\"per\":\"{0}\",\"tok\":{1},\"pct5\":{2:0.0},\"pctw\":{3:0.0}," +
-            "\"f5\":{4:0.000},\"fw\":{5:0.000},\"cost\":{6:0.00},\"rec\":{7}{8}}}",
+            "\"f5\":{4:0.000},\"fw\":{5:0.000},\"cost\":{6:0.00},\"rec\":{7}{8}}}\n",
             per, tok, pct5, pctw, f5, fw, cost, rec ? 1 : 0,
             src.Length > 0 ? ",\"src\":\"" + Esc(src) + "\"" : "");
         try
         {
-            p.WriteLine(line);
+            // src にディレクトリ名の日本語が入り得るので UTF-8（ATOM 側の
+            // 日本語フォントがそのまま描ける）
+            var b = Encoding.UTF8.GetBytes(line);
+            s.Write(b, 0, b.Length);
+            s.Flush();
         }
         catch
         {
             // 抜かれた / スリープ復帰などで壊れたら捨てて再探索に戻る
             lock (gate)
             {
-                try { p.Dispose(); } catch { }
-                if (port == p) port = null;
+                try { s.Dispose(); } catch { }
+                if (stream == s) stream = null;
             }
             Status = "切断（再接続待ち）";
         }
@@ -732,6 +756,55 @@ static class SubMon
         return found;
     }
 
+    static Microsoft.Win32.SafeHandles.SafeFileHandle OpenPort(string name)
+    {
+        // GENERIC_READ|WRITE, 排他, OPEN_EXISTING
+        return CreateFile("\\\\.\\" + name, 0xC0000000, 0, IntPtr.Zero, 3, 0, IntPtr.Zero);
+    }
+
+    /// <summary>2 段階 open + ping/hello 検証。成功なら開いたままの stream を返す。</summary>
+    static FileStream Handshake(string name)
+    {
+        try
+        {
+            using (var h1 = OpenPort(name))
+            {
+                if (h1.IsInvalid) return null;
+                System.Threading.Thread.Sleep(100);
+            }   // close でリセットが走り、デバイスは再起動する
+            System.Threading.Thread.Sleep(3000);
+
+            var h = OpenPort(name);
+            if (h.IsInvalid) return null;
+            var to = new CommTimeouts { RI = 50, RM = 0, RC = 300, WM = 0, WC = 300 };
+            SetCommTimeouts(h, ref to);
+            var fs = new FileStream(h, FileAccess.ReadWrite, 256, false);
+            try
+            {
+                var ping = Encoding.ASCII.GetBytes("{\"ping\":1}\n");
+                fs.Write(ping, 0, ping.Length);
+                fs.Flush();
+                var buf = new byte[512];
+                var sb = new StringBuilder();
+                int t0 = Environment.TickCount;
+                while (Environment.TickCount - t0 < 2500)
+                {
+                    int n = fs.Read(buf, 0, buf.Length);   // COMMTIMEOUTS で 300ms 上限
+                    if (n <= 0) continue;
+                    sb.Append(Encoding.ASCII.GetString(buf, 0, n));
+                    if (sb.ToString().Contains("ctm-atom")) return fs;
+                }
+                fs.Dispose();
+            }
+            catch
+            {
+                try { fs.Dispose(); } catch { }
+            }
+        }
+        catch { }
+        return null;
+    }
+
     static void Discover()
     {
         try
@@ -740,36 +813,12 @@ static class SubMon
             foreach (var name in CandidatePorts())
             {
                 if (!live.Contains(name)) continue;   // 抜かれた後の残骸エントリ
-                SerialPort p = null;
-                try
+                var fs = Handshake(name);
+                if (fs != null)
                 {
-                    p = new SerialPort(name, 115200);
-                    p.DtrEnable = true;      // CDC 相手には DTR を立てる
-                    p.RtsEnable = true;
-                    p.NewLine = "\n";
-                    p.ReadTimeout = 400;
-                    p.WriteTimeout = 300;
-                    p.Open();
-                    p.DiscardInBuffer();
-                    p.WriteLine("{\"ping\":1}");
-                    var until = DateTime.Now.AddMilliseconds(900);
-                    while (DateTime.Now < until)
-                    {
-                        string l;
-                        try { l = p.ReadLine(); }
-                        catch (TimeoutException) { continue; }
-                        if (l != null && l.Contains("ctm-atom"))
-                        {
-                            lock (gate) port = p;
-                            Status = "接続中 " + name;
-                            return;
-                        }
-                    }
-                    p.Dispose();
-                }
-                catch
-                {
-                    if (p != null) { try { p.Dispose(); } catch { } }
+                    lock (gate) stream = fs;
+                    Status = "接続中 " + name;
+                    return;
                 }
             }
             Status = "未接続";
@@ -781,10 +830,10 @@ static class SubMon
     {
         lock (gate)
         {
-            if (port != null)
+            if (stream != null)
             {
-                try { port.Dispose(); } catch { }
-                port = null;
+                try { stream.Dispose(); } catch { }
+                stream = null;
             }
         }
         if (!Store.AtomEnabled) Status = "未接続";

@@ -16,6 +16,7 @@
 
 #include <M5Unified.h>
 #include <math.h>
+#include "soc/rtc_cntl_reg.h"   // {"flash":1} でダウンロードモードに入るため
 
 static const char *FW_VER = "0.2.0";
 
@@ -179,6 +180,15 @@ static void applyLine(const char *line)
     double v;
     if (jsonNum(line, "ping", &v)) { sendHello(); return; }
     if (jsonNum(line, "dbg", &v)) { dbgImu = v != 0; return; }
+    if (jsonNum(line, "flash", &v) && v != 0) {
+        // 次回書き込みを手放しで行うための入口。ROM ダウンロードモードへ
+        // 再起動する（esptool は --before no_reset で開く）。
+        Serial.println("{\"bye\":\"download-mode\"}");
+        Serial.flush();
+        delay(100);
+        REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
+        esp_restart();
+    }
     if (!jsonNum(line, "tok", &v)) return;   // 状態行以外は無視
 
     char per[8];
@@ -245,12 +255,12 @@ static void updateOrientation()
     float mag = sqrtf(ax * ax + ay * ay);
     if (mag < 0.55f) { candFrames = 0; return; }   // ほぼ平置き → 現状維持
 
-    // AtomS3 系の M5Unified 正規化軸: 画面を正面に見て +X = 右, +Y = 上。
-    // 重力は「下向き」に +1g で現れる想定で、支配軸から目標角を選ぶ。
-    // 実機で逆に回る場合はこの表を入れ替える（{"dbg":1} で現物合わせ）。
+    // AtomS3R 実機合わせ済み (2026-08-23): X はそのまま、Y は符号が想定と逆
+    // だった（「上下が逆。左右は正しい」）。ここは現物基準の表なので、
+    // 変更するときは必ず実機で 4 方向を回して確認すること。
     int cand;
     if (fabsf(ax) > fabsf(ay)) cand = (ax > 0) ? 90 : 270;
-    else                       cand = (ay > 0) ? 180 : 0;
+    else                       cand = (ay > 0) ? 0 : 180;
 
     if (cand != candAng) { candAng = cand; candFrames = 0; }
     if (++candFrames >= 10 && cand != targetAng) {
