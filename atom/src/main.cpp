@@ -102,6 +102,13 @@ static double waterPhase = 0;
 static int    glintFor = 0;
 static char   curPer[8] = "5H";
 
+// ---- ナイト / デイモード ------------------------------------------------
+// 画面ボタン（画面全体がボタン）で切替。ナイトはバックライトを絞り、
+// 数字を電球色にし、水面のきらめきを止める。切替はフェードで行う。
+static bool  night = false;
+static float briCur = 160.0f;        // バックライトの現在値（フェード用）
+static float modeFlash = 0.0f;       // 切替直後に "NIGHT"/"DAY" を出す残量
+
 struct Floaty { char txt[20]; char src[96]; float life; };
 static Floaty flo[3];
 static int    floN = 0;
@@ -263,7 +270,7 @@ static void updateOrientation()
     else                       cand = (ay > 0) ? 0 : 180;
 
     if (cand != candAng) { candAng = cand; candFrames = 0; }
-    if (++candFrames >= 10 && cand != targetAng) {
+    if (++candFrames >= 5 && cand != targetAng) {   // 約 0.17 秒で確定（素早く）
         targetAng = cand;
         candFrames = 0;
     }
@@ -276,7 +283,7 @@ static void animateAngle()
     float diff = (float)targetAng - ang;
     while (diff > 180.0f)  diff -= 360.0f;
     while (diff < -180.0f) diff += 360.0f;
-    angVel = angVel * 0.93f + diff * 0.011f;
+    angVel = angVel * 0.84f + diff * 0.05f;   // 素早く回してすっと止まる（約 0.5 秒）
     ang += angVel;
     if (ang >= 360.0f) ang -= 360.0f;
     if (ang < 0.0f)    ang += 360.0f;
@@ -334,8 +341,8 @@ static void drawWater()
         if (iw >= 0 && iw < H) content.drawPixel(x, iw, C_SURF_W);
         if (is >= 0 && is < H) content.drawPixel(x, is, C_SURF_S);
     }
-    // 水面グリント: バースト中、5h 水面に光点がまたたく
-    if (glintFor > 0 && (glintFor & 1)) {
+    // 水面グリント: バースト中、5h 水面に光点がまたたく（ナイト中は消灯）
+    if (!night && glintFor > 0 && (glintFor & 1)) {
         for (int i = 0; i < 2; i++) {
             int x = rand() % W;
             int y = (int)surfaceY(lvS, (float)x, 1.6f, 0.085f, waterPhase) - 1;
@@ -391,6 +398,7 @@ static void drawNumber()
     // バースト直後は金色に光って戻る（PC と同じ規則）。
     double maxPct = rx.pct5 > rx.pctw ? rx.pct5 : rx.pctw;
     uint8_t r = 236, g = 234, b = 240;
+    if (night) { r = 255; g = 196; b = 120; }   // ナイトは電球色（青を絞る）
     if (maxPct >= 90)      { r = 201; g = 107; b = 143; }
     else if (maxPct >= 70) { r = 214; g = 139; b = 107; }
     float counting = (float)fmin(1.0, fabs(target - shown) / 4000.0) * 0.8f;
@@ -529,6 +537,16 @@ void loop()
 {
     uint32_t t0 = millis();
     M5.update();
+
+    // 画面ボタンでナイト / デイ切替。バックライトはフェードで移る
+    if (M5.BtnA.wasClicked()) {
+        night = !night;
+        modeFlash = 1.0f;
+    }
+    float briTgt = night ? 26.0f : 160.0f;
+    briCur += (briTgt - briCur) * 0.12f;
+    M5.Display.setBrightness((uint8_t)(briCur + 0.5f));
+
     pollSerial();
     updateOrientation();
     animateAngle();
@@ -567,12 +585,22 @@ void loop()
         if (millis() - rx.lastRx > 3500) drawNoLink();
     }
 
+    // 切替直後だけモード名を出してフェードアウト
+    if (modeFlash > 0.02f) {
+        uint16_t c = blend565(24, 23, 28, 255, 220, 150, modeFlash);
+        content.setTextDatum(top_center);
+        content.setFont(&fonts::Font0);
+        content.setTextColor(c);
+        content.drawString(night ? "NIGHT" : "DAY", W / 2, 18);
+        modeFlash *= 0.94f;
+    }
+
     // 回転合成: 回転中はほんの少し縮めて「転がっている」立体感を出す
     float diff = (float)targetAng - ang;
     while (diff > 180.0f)  diff -= 360.0f;
     while (diff < -180.0f) diff += 360.0f;
     float prog = fminf(1.0f, fabsf(diff) / 90.0f);
-    float scale = 1.0f - 0.14f * sinf(prog * (float)M_PI);
+    float scale = 1.0f - 0.10f * sinf(prog * (float)M_PI);
 
     screenBuf.fillSprite(TFT_BLACK);
     content.pushRotateZoomWithAA(&screenBuf, W / 2.0f - 0.5f, H / 2.0f - 0.5f,
