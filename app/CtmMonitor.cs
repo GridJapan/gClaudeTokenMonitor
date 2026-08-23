@@ -2029,8 +2029,8 @@ class DetailForm : Form
         // 診断用: 公式使用率 % の 5 分毎スナップショット。いつ % が跳ねたかを突き合わせる
         var t2 = new TabPage("使用率の推移（5分毎）") { BackColor = Theme.Bg };
 
-        Setup(instrView, new[] { "開始", "所要", "セッション", "作業ディレクトリ", "応答数", "トークン", "コスト", "指示（先頭200字）", "ディレクトリ（フルパス）" },
-            new[] { 70, 60, 80, 130, 60, 110, 90, 420, 280 });
+        Setup(instrView, new[] { "開始", "所要", "セッション", "作業ディレクトリ", "応答数", "トークン", "cache率", "コスト", "指示（先頭200字）", "ディレクトリ（フルパス）" },
+            new[] { 70, 60, 80, 130, 60, 110, 60, 90, 420, 280 });
         // ダブルクリック（または Enter）で、その指示の応答内訳をモーダルで開く
         instrView.ItemActivate += delegate
         {
@@ -2155,7 +2155,7 @@ class DetailForm : Form
             if (!curBy.TryGetValue(ses, out cur) || (string)cur[2] != pr)
             {
                 cur = new object[] { ses, cwd, pr, ts, ts, 0, 0L, 0.0,
-                    new List<object[]>(), cwdFull };
+                    new List<object[]>(), cwdFull, 0L };
                 curBy[ses] = cur;
                 groups.Add(cur);
             }
@@ -2163,6 +2163,7 @@ class DetailForm : Form
             cur[5] = (int)cur[5] + 1;
             cur[6] = (long)cur[6] + tok;
             cur[7] = (double)cur[7] + cost;
+            cur[10] = (long)cur[10] + cread;   // cache率の分子
             // モーダル用: 応答 1 件ぶんの完全な内訳
             ((List<object[]>)cur[8]).Add(new object[] {
                 ts, model,
@@ -2195,6 +2196,10 @@ class DetailForm : Form
             it.SubItems.Add((string)gr[1]);
             it.SubItems.Add(((int)gr[5]).ToString());
             it.SubItems.Add(((long)gr[6]).ToString("N0"));
+            // cache率: この指示の総トークンに占めるキャッシュ読出の割合。
+            // 96% のような値が普通（同じ文脈を応答のたびに読み直すため）。
+            long gtok = (long)gr[6], gcr = (long)gr[10];
+            it.SubItems.Add(gtok > 0 ? ((double)gcr * 100 / gtok).ToString("0") + "%" : "-");
             it.SubItems.Add(Store.Money((double)gr[7]));
             var pr2 = (string)gr[2];
             it.SubItems.Add(pr2.Length > 0 ? pr2 : "（指示の記録なし）");

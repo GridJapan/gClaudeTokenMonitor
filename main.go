@@ -515,6 +515,7 @@ type jsonOut struct {
 	GeneratedAt  string  `json:"generated_at"`
 	LogFiles     int     `json:"log_files"`
 	Total        Agg     `json:"total"`
+	CacheReadPct float64 `json:"cache_read_pct"` // 総トークンに占めるキャッシュ読出の割合 (0-100)
 	ByModel      []KV    `json:"by_model"`
 	ByProject    []KV    `json:"by_project"`
 	BySession    []KV    `json:"by_session"`
@@ -584,6 +585,7 @@ func emitJSON(s *Snapshot) {
 		GeneratedAt:  s.Now.Format(time.RFC3339),
 		LogFiles:     s.Files,
 		Total:        s.Total,
+		CacheReadPct: s.Total.CacheReadPct(),
 		ByModel:      s.Models,
 		ByProject:    s.Projects,
 		BySession:    s.Sessions,

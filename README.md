@@ -12,7 +12,7 @@ assistant メッセージの `usage` を集計して、トークン数とコス�
  -----------------------------------------------------------------------------
 
  TOTAL   5.47G tokens    $3937    10,981 msgs
-         in 24.1K | cache-w 150.16M | cache-r 5.31G | out 3.33M
+         in 24.1K | cache-w 150.16M | cache-r 5.31G (97.1%) | out 3.33M
 
  CURRENT BLOCK (5h)  22:00 -> 03:00  ###################......  91%
    tokens 52.83M   cost $57.31   burn 697,805 tok/min   26m left

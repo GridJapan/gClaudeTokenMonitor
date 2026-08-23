@@ -114,8 +114,9 @@ func liveView(s *Snapshot, w int) []string {
 			cBold+cGreen, tokens(t.Total()), cReset,
 			cBold+cGreen, money(t.Cost), cReset,
 			cGray, comma(t.Messages), cReset),
-		fmt.Sprintf(" %s        in %s | cache-w %s | cache-r %s | out %s%s",
-			cGray, tokens(t.Input), tokens(t.CacheWrite()), tokens(t.CacheRead), tokens(t.Output), cReset),
+		fmt.Sprintf(" %s        in %s | cache-w %s | cache-r %s (%.1f%%) | out %s%s",
+			cGray, tokens(t.Input), tokens(t.CacheWrite()), tokens(t.CacheRead),
+			t.CacheReadPct(), tokens(t.Output), cReset),
 		"",
 	}
 

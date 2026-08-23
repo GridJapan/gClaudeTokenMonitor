@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"sort"
 	"time"
 )
@@ -39,6 +40,17 @@ func (a *Agg) add(e Entry) {
 func (a Agg) CacheWrite() int { return a.CacheWrite5m + a.CacheWrite1h }
 func (a Agg) Total() int {
 	return a.Input + a.CacheWrite() + a.CacheRead + a.Output
+}
+
+// CacheReadPct is the share of cache reads in the total (0-100, one decimal).
+// Cache reads are 0.1x the base rate, so a total dominated by them looks far
+// bigger than what was actually paid for — surface the share next to totals.
+func (a Agg) CacheReadPct() float64 {
+	t := a.Total()
+	if t == 0 {
+		return 0
+	}
+	return math.Round(float64(a.CacheRead)/float64(t)*1000) / 10
 }
 
 // Store holds every deduplicated entry seen so far.
