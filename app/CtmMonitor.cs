@@ -12,9 +12,11 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.IO;
+using System.IO.Ports;
 using System.Linq;
 using System.Text;
 using System.Windows.Forms;
+using Microsoft.Win32;
 
 static class Theme
 {
@@ -547,6 +549,9 @@ static class Store
 
     public static Period PeriodMode = Period.FiveH;
 
+    /// <summary>ATOMS3R サブモニタ（USB・表示専用）へ送信するか。</summary>
+    public static bool AtomEnabled;
+
     public static string PeriodLabel
     {
         get { return PeriodMode == Period.Week ? "WEEK" : "5H"; }
@@ -568,6 +573,7 @@ static class Store
             LayoutMode = Str(txt, "layout") == "Big" ? Layout.Big : Layout.Detail;
             WinScale = Str(txt, "size") == "S" ? 0.5f : 1f;
             PeriodMode = Str(txt, "period") == "week" ? Period.Week : Period.FiveH;
+            AtomEnabled = Str(txt, "atom") == "on";
         }
         catch { }
     }
@@ -579,10 +585,11 @@ static class Store
             Directory.CreateDirectory(Root);
             File.WriteAllText(SettingsPath, string.Format(
                 CultureInfo.InvariantCulture,
-                "{{\"unit\":\"{0}\",\"x\":{1},\"y\":{2},\"layout\":\"{3}\",\"size\":\"{4}\",\"period\":\"{5}\"}}",
+                "{{\"unit\":\"{0}\",\"x\":{1},\"y\":{2},\"layout\":\"{3}\",\"size\":\"{4}\",\"period\":\"{5}\",\"atom\":\"{6}\"}}",
                 UnitName, WindowPos.X, WindowPos.Y, LayoutMode,
                 WinScale < 0.75f ? "S" : "L",
-                PeriodMode == Period.Week ? "week" : "5h"));
+                PeriodMode == Period.Week ? "week" : "5h",
+                AtomEnabled ? "on" : "off"));
         }
         catch { }
     }
@@ -620,6 +627,167 @@ static class Store
         if (d.TotalHours >= 24) return ((int)d.TotalDays) + "d" + d.Hours + "h";
         if (d.TotalHours >= 1) return ((int)d.TotalHours) + "h" + d.Minutes + "m";
         return d.Minutes + "m";
+    }
+}
+
+/// <summary>ATOMS3R サブモニタ（USB CDC・表示専用）への送信。
+/// 200ms ごとの Reload から状態 1 行 (NDJSON) を書くだけで、描画・演出・
+/// 回転はデバイス側 (atom/) が 30fps で行う。接続はバックグラウンドで探す:
+/// レジストリの Espressif (VID_303A) エントリから COM 番号を集め、
+/// ping に "ctm-atom" と答えたポートだけを採用する（他の機器を荒らさない）。</summary>
+static class SubMon
+{
+    static SerialPort port;
+    static readonly object gate = new object();
+    static volatile bool connecting;
+    static DateTime lastAttempt = DateTime.MinValue;
+    static string pendingSrc = "";
+
+    public static string Status = "未接続";
+
+    /// <summary>バースト時の発生源ディレクトリ。次の 1 行にだけ載せる。</summary>
+    public static void NoteBurst(string src)
+    {
+        if (!string.IsNullOrEmpty(src)) pendingSrc = src;
+    }
+
+    public static void Tick(string per, long tok, double pct5, double pctw,
+        double f5, double fw, double cost, bool rec)
+    {
+        if (!Store.AtomEnabled) { Shutdown(); return; }
+        SerialPort p;
+        lock (gate) p = port;
+        if (p == null)
+        {
+            if (!connecting && (DateTime.Now - lastAttempt).TotalSeconds > 3)
+            {
+                connecting = true;
+                lastAttempt = DateTime.Now;
+                var th = new System.Threading.Thread(Discover);
+                th.IsBackground = true;
+                th.Start();
+            }
+            return;
+        }
+        string src = pendingSrc;
+        pendingSrc = "";
+        var ic = CultureInfo.InvariantCulture;
+        string line = string.Format(ic,
+            "{{\"per\":\"{0}\",\"tok\":{1},\"pct5\":{2:0.0},\"pctw\":{3:0.0}," +
+            "\"f5\":{4:0.000},\"fw\":{5:0.000},\"cost\":{6:0.00},\"rec\":{7}{8}}}",
+            per, tok, pct5, pctw, f5, fw, cost, rec ? 1 : 0,
+            src.Length > 0 ? ",\"src\":\"" + Esc(src) + "\"" : "");
+        try
+        {
+            p.WriteLine(line);
+        }
+        catch
+        {
+            // 抜かれた / スリープ復帰などで壊れたら捨てて再探索に戻る
+            lock (gate)
+            {
+                try { p.Dispose(); } catch { }
+                if (port == p) port = null;
+            }
+            Status = "切断（再接続待ち）";
+        }
+    }
+
+    static string Esc(string s)
+    {
+        return s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+    }
+
+    /// <summary>Espressif の USB エントリ（VID_303A）に紐付く COM 番号。</summary>
+    static List<string> CandidatePorts()
+    {
+        var found = new List<string>();
+        try
+        {
+            using (var usb = Registry.LocalMachine.OpenSubKey(
+                       @"SYSTEM\CurrentControlSet\Enum\USB"))
+            {
+                if (usb == null) return found;
+                foreach (var dev in usb.GetSubKeyNames())
+                {
+                    if (!dev.StartsWith("VID_303A", StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    using (var dk = usb.OpenSubKey(dev))
+                    {
+                        if (dk == null) continue;
+                        foreach (var inst in dk.GetSubKeyNames())
+                        {
+                            using (var pk = dk.OpenSubKey(inst + @"\Device Parameters"))
+                            {
+                                var pn = pk == null ? null : pk.GetValue("PortName") as string;
+                                if (!string.IsNullOrEmpty(pn) && !found.Contains(pn))
+                                    found.Add(pn);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        catch { }
+        return found;
+    }
+
+    static void Discover()
+    {
+        try
+        {
+            var live = new HashSet<string>(SerialPort.GetPortNames());
+            foreach (var name in CandidatePorts())
+            {
+                if (!live.Contains(name)) continue;   // 抜かれた後の残骸エントリ
+                SerialPort p = null;
+                try
+                {
+                    p = new SerialPort(name, 115200);
+                    p.DtrEnable = true;      // CDC 相手には DTR を立てる
+                    p.RtsEnable = true;
+                    p.NewLine = "\n";
+                    p.ReadTimeout = 400;
+                    p.WriteTimeout = 300;
+                    p.Open();
+                    p.DiscardInBuffer();
+                    p.WriteLine("{\"ping\":1}");
+                    var until = DateTime.Now.AddMilliseconds(900);
+                    while (DateTime.Now < until)
+                    {
+                        string l;
+                        try { l = p.ReadLine(); }
+                        catch (TimeoutException) { continue; }
+                        if (l != null && l.Contains("ctm-atom"))
+                        {
+                            lock (gate) port = p;
+                            Status = "接続中 " + name;
+                            return;
+                        }
+                    }
+                    p.Dispose();
+                }
+                catch
+                {
+                    if (p != null) { try { p.Dispose(); } catch { } }
+                }
+            }
+            Status = "未接続";
+        }
+        finally { connecting = false; }
+    }
+
+    public static void Shutdown()
+    {
+        lock (gate)
+        {
+            if (port != null)
+            {
+                try { port.Dispose(); } catch { }
+                port = null;
+            }
+        }
+        if (!Store.AtomEnabled) Status = "未接続";
     }
 }
 
@@ -755,6 +923,21 @@ class CompactForm : Form
             perMenu.DropDownItems.Add(mi);
         }
         menu.Items.Add(perMenu);
+
+        // ATOMS3R サブモニタ（USB 接続の 128x128 表示専用デバイス）
+        var atomItem = new ToolStripMenuItem("サブモニタ (ATOM)");
+        atomItem.Checked = Store.AtomEnabled;
+        atomItem.Click += delegate
+        {
+            Store.AtomEnabled = !Store.AtomEnabled;
+            atomItem.Checked = Store.AtomEnabled;
+            Store.SaveSettings();
+        };
+        menu.Items.Add(atomItem);
+        menu.Opening += delegate
+        {
+            atomItem.Text = "サブモニタ (ATOM)  ―  " + SubMon.Status;
+        };
 
         // Windows 起動時に自動開始（このマシンでの自分の絶対パスで登録するので、
         // どこに clone しても動く。レコーダーはアプリが起動時に起こす）
@@ -918,8 +1101,10 @@ class CompactForm : Form
         {
             long delta = nt - (long)target;
             target = nt;
-            if (Store.LayoutMode == Store.Layout.Big) TriggerFx(delta);
+            string bsrc = Store.TakeLastSources();
+            if (Store.LayoutMode == Store.Layout.Big) TriggerFx(delta, bsrc);
             else shown = nt;          // Detail 表示中は静かに追従
+            SubMon.NoteBurst(bsrc);   // サブモニタの +N フロートにも発生源を出す
         }
         else if (nt < target)
         {
@@ -928,12 +1113,24 @@ class CompactForm : Form
         }
         today = t;
         Store.Supervise();   // クラッシュしていれば証跡を残して自動再起動
+
+        // サブモニタ (ATOM) へ現在の状態を送る（有効時のみ・表示専用）
+        {
+            double sp = 0, wp = 0, f5 = -1, fw = -1;
+            foreach (var x in samples)
+            {
+                if (x.Key == "session") { sp = x.Percent; f5 = ResetFrac(x.ResetsAt, 5.0); }
+                if (x.Key == "weekly_all") { wp = x.Percent; fw = ResetFrac(x.ResetsAt, 168.0); }
+            }
+            SubMon.Tick(Store.PeriodLabel, (long)target, sp, wp, f5, fw,
+                periodCost, Store.RecorderAlive());
+        }
         Invalidate();
     }
 
     /// <summary>増分の大きさで演出の強度を決める。5 秒ごとに必ず起きるので
     /// 小さい増分は控えめに、大きいバーストだけ派手にする。</summary>
-    void TriggerFx(long delta)
+    void TriggerFx(long delta, string src)
     {
         tier = delta < 50000 ? 1 : delta < 200000 ? 2 : delta < 1000000 ? 3 : 4;
         punch = 0.03f + 0.02f * tier;
@@ -957,7 +1154,7 @@ class CompactForm : Form
                 0f, (float)(34 + rng.NextDouble() * 26),
                 (float)(2.6 + rng.NextDouble() * 2.6), 0f });
         }
-        floats.Add(new object[] { "+" + Store.Tokens(delta), 1f, Store.TakeLastSources() });
+        floats.Add(new object[] { "+" + Store.Tokens(delta), 1f, src });
         if (floats.Count > 4) floats.RemoveAt(0);
 
         // +N が昇っている間、水面が光の反射できらめき続ける
@@ -2228,6 +2425,7 @@ class TrayApp : ApplicationContext
         icon.Visible = false;
         compact.OnQuit = null;   // FormClosing の再入を防ぐ
         compact.Hide();
+        SubMon.Shutdown();
         // アプリ終了と一緒に Go の常駐も止める。
         Store.Run("stop", true);
         Application.Exit();

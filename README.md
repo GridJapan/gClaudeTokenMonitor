@@ -43,6 +43,7 @@ assistant メッセージの `usage` を集計して、トークン数とコス�
 |---|---|
 | ルート `*.go` | ctm 本体（CLI・集計・常駐記録・使用率取得） |
 | `app/` | Windows UI（C#）と起動ラッパー |
+| `atom/` | ATOMS3R サブモニタのファームウェア（PlatformIO / M5Unified） |
 | `tools/` | 補助スクリプト（全文トランスクリプト抽出・レポート生成） |
 | `docs/` | システム構成・用語統一表・引き継ぎメモ・**ログ形式リファレンス** |
 
@@ -293,6 +294,24 @@ GET https://api.anthropic.com/api/oauth/usage
 .\bin\ctm.exe limits history            # 今日の記録
 .\bin\ctm.exe limits history -day "2026-08-21" -w weekly_all
 ```
+
+## サブモニタ（ATOMS3R）
+
+M5Stack **ATOMS3R**（128x128 IPS・BMI270 IMU・USB CDC）を、机上の表示専用サブモニタとして使える。
+PC の CtmMonitor が 200ms ごとに状態 1 行（NDJSON）を USB へ送り、デバイス側が
+**レイアウト 2A**（Big レイアウトの低解像度再構成: 2 層の水槽 + スプリングカウンタ +
+縁バー + バースト演出）を 30fps で描く。IMU で重力方向を監視し、本体を物理的に
+回すと表示が最寄りの 0/90/180/270° へ「ボールが転がるように」ゆっくり追従して回る。
+
+```powershell
+# ファームウェア書き込み（初回のみ。要 PlatformIO: pip install --user platformio）
+pio run -d atom -t upload
+```
+
+書き込み後は CtmMonitor の右クリック →「サブモニタ (ATOM)」を ON にするだけ。
+ポートはレジストリの Espressif (VID_303A) エントリから自動検出し、
+`{"ping":1}` に `ctm-atom` と応答したデバイスだけに接続する。
+プロトコルの詳細は `atom/src/main.cpp` 冒頭のコメントを参照。
 
 ## 計測ロジック
 

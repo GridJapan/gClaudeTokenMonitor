@@ -13,3 +13,6 @@ data/
 .idea/
 Thumbs.db
 desktop.ini
+
+# PlatformIO (atom ファームウェア)
+atom/.pio/
