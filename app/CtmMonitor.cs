@@ -19,13 +19,13 @@ using System.Windows.Forms;
 // csc はこの属性から Win32 バージョンリソースを合成する。タスクバーや
 // タスクマネージャに出る表示名は AssemblyTitle (= FileDescription)。
 // 無いと exe ファイル名「CtmMonitor」がそのまま表示されてしまう。
-[assembly: System.Reflection.AssemblyTitle("Claude Token Monitor")]
+[assembly: System.Reflection.AssemblyTitle("gClaudeTokenMonitor")]
 [assembly: System.Reflection.AssemblyProduct("gClaudeTokenMonitor")]
 [assembly: System.Reflection.AssemblyDescription("Claude Code token usage monitor")]
 [assembly: System.Reflection.AssemblyCompany("GridJapan")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright (c) 2026 GridJapan")]
-[assembly: System.Reflection.AssemblyVersion("0.1.2.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.1.2.0")]
+[assembly: System.Reflection.AssemblyVersion("0.1.3.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.1.3.0")]
 
 static class Theme
 {
@@ -664,7 +664,7 @@ class CompactForm : Form
     public CompactForm()
     {
         // タスクバーに並ぶ本体ウィンドウ。枠は無いがアプリとして常駐する。
-        Text = "Claude Token Monitor";
+        Text = "gClaudeTokenMonitor";
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = true;
         StartPosition = FormStartPosition.Manual;
@@ -1706,7 +1706,7 @@ class CompactForm : Form
 
         int y = 10;
         using (var b = new SolidBrush(Theme.Mut))
-            g.DrawString("CLAUDE TOKEN MONITOR", fSmall, b, 12, y);
+            g.DrawString("gClaudeTokenMonitor", fSmall, b, 12, y);
         using (var b = new SolidBrush(Theme.Accent))
         {
             var u = Store.UnitName;
@@ -1789,7 +1789,7 @@ class DetailForm : Form
 
     public DetailForm()
     {
-        Text = "Claude Token Monitor — 過去ログ";
+        Text = "gClaudeTokenMonitor — 過去ログ";
         Size = new Size(1000, 640);
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Theme.Bg;
@@ -2189,7 +2189,7 @@ class TrayApp : ApplicationContext
     public TrayApp()
     {
         icon.Icon = BuildIcon(Theme.Accent);
-        icon.Text = "Claude Token Monitor";
+        icon.Text = "gClaudeTokenMonitor";
         icon.Visible = true;
 
         var menu = new ContextMenuStrip();
@@ -2330,7 +2330,7 @@ static class Program
         {
             if (!created)
             {
-                MessageBox.Show("Claude Token Monitor は既に起動しています。",
+                MessageBox.Show("gClaudeTokenMonitor は既に起動しています。",
                     "CtmMonitor", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
