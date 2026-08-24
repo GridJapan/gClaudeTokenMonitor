@@ -1,5 +1,7 @@
 # gClaudeTokenMonitor (ctm)
 
+**紹介ページ: https://gridjapan.github.io/gClaudeTokenMonitor/ （[日本語](https://gridjapan.github.io/gClaudeTokenMonitor/jp/)）**
+
 Claude Code のトークン消費量をリアルタイムで計測するターミナルモニター。
 Go 標準ライブラリのみ・外部依存ゼロ・単一 exe。
 
