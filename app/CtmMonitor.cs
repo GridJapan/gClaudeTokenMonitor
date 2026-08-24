@@ -735,10 +735,23 @@ class EspRom : IDisposable
     static extern bool EscapeCommFunction(
         Microsoft.Win32.SafeHandles.SafeFileHandle h, uint fn);
 
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool CancelIoEx(
+        Microsoft.Win32.SafeHandles.SafeFileHandle h, IntPtr overlapped);
+
     const uint SETRTS = 3, CLRRTS = 4, SETDTR = 5, CLRDTR = 6;
 
     Microsoft.Win32.SafeHandles.SafeFileHandle h;
     FileStream fs;
+
+    /// <summary>ブロック中の Win32 I/O を強制解除して以後の操作を失敗させる。
+    /// デバイスの USB がウェッジすると WriteFile がタイムアウトを無視して
+    /// 無期限ブロックすることがある（実機で 74% 停止を再現）。その脱出口。</summary>
+    public void Abort()
+    {
+        try { CancelIoEx(h, IntPtr.Zero); } catch { }
+        try { fs.Dispose(); } catch { }
+    }
 
     public static EspRom Open(string port)
     {
@@ -771,13 +784,20 @@ class EspRom : IDisposable
     }
 
     /// <summary>チップをリセットしてアプリを起動させる（書き込み完了後に呼ぶ）。
-    /// esptool の HardReset と同じ: EN を Low にして離す。</summary>
+    /// USB-Serial/JTAG のエミュレーションでは、リセットは DTR=0 の組でしか掛からず、
+    /// DTR=0 のまま EN を解除すると boot:0x10 (DOWNLOAD) に落ちる（実機で確認）。
+    /// 解除の直前に DTR=1 へ上げて GPIO0 を通常起動側に倒すのが正解
+    /// （この手順でアプリが起動し hello が返ることを実機で検証済み）。
+    /// リセットで USB ごと再列挙されるため、このハンドルは以後使えない。</summary>
     public void HardReset()
     {
-        SetRts(true);                        // EN -> LOW
-        System.Threading.Thread.Sleep(100);
-        SetRts(false);                       // 解除 → アプリが起動する
+        SetDtr(false);
+        SetRts(true);                        // EN -> LOW（リセット保持）
+        System.Threading.Thread.Sleep(150);
+        SetDtr(true);                        // GPIO0 -> High（通常起動側）
+        SetRts(false);                       // EN 解除 -> アプリ起動
         System.Threading.Thread.Sleep(200);
+        SetDtr(false);                       // Idle へ戻す
     }
 
     /// <summary>USB-Serial/JTAG 経由で ROM ダウンロードモードへ入れる
@@ -957,37 +977,67 @@ class EspRom : IDisposable
     }
 
     /// <summary>image を offset へ書き、MD5 で検証する。erase 込み。
-    /// 失敗理由は err に入る（crash.log に出して原因究明に使う）。</summary>
+    /// 失敗理由は err に入る（crash.log に出して原因究明に使う）。
+    /// 進捗が 75 秒止まったらウォッチドッグが Abort して抜ける（74% 停止の再発防止。
+    /// コマンド応答のタイムアウトでは、送信側の WriteFile ブロックを救えないため）。</summary>
     public bool WriteRegion(byte[] image, uint offset, Action<int> progress, out string err)
     {
         err = "";
         const uint BS = 0x400;   // ROM ローダーのブロックサイズ
         uint blocks = (uint)((image.Length + BS - 1) / BS);
-        // FLASH_BEGIN は領域消去を同期で行うので応答が遅い（サイズ比例）
-        if (!FlashBegin((uint)image.Length, blocks, BS, offset, 60000)) { err = "flash_begin 失敗"; return false; }
-        for (uint i = 0; i < blocks; i++)
+
+        int beat = 0;
+        bool watchdogStop = false;
+        var wd = new System.Threading.Thread(delegate ()
         {
-            var b = new byte[BS];
-            int off = (int)(i * BS);
-            int n = Math.Min((int)BS, image.Length - off);
-            Array.Copy(image, off, b, 0, n);
-            for (int k = n; k < (int)BS; k++) b[k] = 0xFF;
-            if (!FlashData(b, i)) { err = "flash_data seq=" + i + " 失敗"; return false; }
-            if (progress != null && (i % 32 == 0 || i == blocks - 1))
-                progress((int)((i + 1) * 100 / blocks));
-        }
-        string want;
-        using (var md5 = System.Security.Cryptography.MD5.Create())
+            int last = -1;
+            long lastChange = NowMs();
+            while (!watchdogStop)
+            {
+                System.Threading.Thread.Sleep(1000);
+                if (beat != last) { last = beat; lastChange = NowMs(); }
+                else if (NowMs() - lastChange > 75000) { Abort(); return; }
+            }
+        });
+        wd.IsBackground = true;
+        wd.Start();
+
+        try
         {
-            var sb = new StringBuilder(32);
-            foreach (var x in md5.ComputeHash(image)) sb.Append(x.ToString("x2"));
-            want = sb.ToString();
+            // FLASH_BEGIN は領域消去を同期で行うので応答が遅い（サイズ比例）
+            if (!FlashBegin((uint)image.Length, blocks, BS, offset, 60000)) { err = "flash_begin 失敗"; return false; }
+            beat++;
+            for (uint i = 0; i < blocks; i++)
+            {
+                var b = new byte[BS];
+                int off = (int)(i * BS);
+                int n = Math.Min((int)BS, image.Length - off);
+                Array.Copy(image, off, b, 0, n);
+                for (int k = n; k < (int)BS; k++) b[k] = 0xFF;
+                if (!FlashData(b, i)) { err = "flash_data seq=" + i + " 失敗"; return false; }
+                beat++;
+                if (progress != null && (i % 32 == 0 || i == blocks - 1))
+                    progress((int)((i + 1) * 100 / blocks));
+            }
+            string want;
+            using (var md5 = System.Security.Cryptography.MD5.Create())
+            {
+                var sb = new StringBuilder(32);
+                foreach (var x in md5.ComputeHash(image)) sb.Append(x.ToString("x2"));
+                want = sb.ToString();
+            }
+            // FLASH_END (0x04) は送らない。esptool も送っておらず（トレースで確認）、
+            // ROM ローダーに投げると失敗が返る。MD5 が一致した時点で書き込みは完了。
+            var got = FlashMd5(offset, (uint)image.Length, 30000);
+            if (got != want) { err = "md5 不一致 got=" + (got ?? "null") + " want=" + want; return false; }
+            return true;
         }
-        // FLASH_END (0x04) は送らない。esptool も送っておらず（トレースで確認）、
-        // ROM ローダーに投げると失敗が返る。MD5 が一致した時点で書き込みは完了。
-        var got = FlashMd5(offset, (uint)image.Length, 30000);
-        if (got != want) { err = "md5 不一致 got=" + (got ?? "null") + " want=" + want; return false; }
-        return true;
+        catch (Exception ex)
+        {
+            err = "I/O 中断: " + ex.Message;   // ウォッチドッグの Abort もここに出る
+            return false;
+        }
+        finally { watchdogStop = true; }
     }
 }
 
@@ -1032,8 +1082,13 @@ static class SubMon
     /// <summary>接続中のポート名。メニューからの手動更新で使う。</summary>
     static string connectedPort = "";
 
+    public static bool Connected
+    {
+        get { lock (gate) return stream != null; }
+    }
+
     /// <summary>接続中で、同梱ファームがデバイスより新しい（＝更新できる）か。
-    /// メニューの「ATOM ファームを更新」を出すかの判定に使う。</summary>
+    /// メニューの「ATOM ファームを更新」を有効にするかの判定に使う。</summary>
     public static bool UpdateAvailable
     {
         get
@@ -1097,11 +1152,14 @@ static class SubMon
         catch
         {
             // 抜かれた / スリープ復帰などで壊れたら捨てて再探索に戻る
+            bool wasConnected;
             lock (gate)
             {
                 try { s.Dispose(); } catch { }
-                if (stream == s) stream = null;
+                wasConnected = stream == s;
+                if (wasConnected) stream = null;
             }
+            if (wasConnected) Store.LogCrash("atom: 切断（再接続待ち）");
             Status = "切断（再接続待ち）";
         }
     }
@@ -1222,6 +1280,7 @@ static class SubMon
                     Status = "接続中 " + name + (DeviceFw.Length > 0 ? " (fw " + DeviceFw + ")" : "");
                     if (UpdateAvailable)
                         Status += "  ※更新あり v" + AtomFw.Ver;
+                    Store.LogCrash("atom: 接続 " + name + " (fw " + DeviceFw + ")");
                     return;
                 }
             }
@@ -1271,6 +1330,7 @@ static class SubMon
                     {
                         lock (gate) { stream = fs2; connectedPort = port; }
                         Status = "接続中 " + port + " (fw " + DeviceFw + ")";
+                        Store.LogCrash("atom: 接続 " + port + " (fw " + DeviceFw + ")");
                         FlashEnd(true, "v" + DeviceFw + " に更新しました");
                         Notify("ATOM 更新完了", "v" + DeviceFw + " で再接続しました。", false);
                     }
@@ -1287,6 +1347,14 @@ static class SubMon
                         "本体のリセットボタンを約 2 秒長押しして緑 LED（ダウンロードモード）にしてから、" +
                         "右クリック→「ATOM を更新」で再試行してください。", true);
                 }
+            }
+            catch (Exception ex)
+            {
+                // ポートが書き込み中に死ぬ（USB 再列挙など）とここに来る。
+                // スレッドを例外死させるとモーダルが固まったままになるので必ず畳む
+                Store.LogCrash("atom: 更新スレッド例外 " + ex.Message);
+                FlashEnd(false, "エラー: " + ex.Message);
+                Status = "更新失敗";
             }
             finally { updating = false; }
         });
@@ -1332,15 +1400,22 @@ static class SubMon
     /// 確実にダウンロードモードへ入れてから SYNC する（esptool と同じ経路）。</summary>
     static EspRom EnterRom(string port)
     {
-        for (int attempt = 0; attempt < 4; attempt++)
+        // 壊れたアプリでブートループしている個体は USB ごと再列挙を繰り返すため、
+        // 途中でポートが死んで例外になり得る。試行単位で握って次を待つ。
+        for (int attempt = 0; attempt < 6; attempt++)
         {
-            var rom = EspRom.Open(port);
-            if (rom == null) { System.Threading.Thread.Sleep(1200); continue; }
-            rom.EnterBootloader();                  // JTAG リセット → ROM ダウンロードモード
-            System.Threading.Thread.Sleep(500);
-            if (rom.Sync()) return rom;
-            rom.Dispose();
-            System.Threading.Thread.Sleep(800);
+            EspRom rom = null;
+            try
+            {
+                rom = EspRom.Open(port);
+                if (rom == null) { System.Threading.Thread.Sleep(1200); continue; }
+                rom.EnterBootloader();              // JTAG リセット → ROM ダウンロードモード
+                System.Threading.Thread.Sleep(500);
+                if (rom.Sync()) return rom;
+            }
+            catch { }
+            if (rom != null) { try { rom.Dispose(); } catch { } }
+            System.Threading.Thread.Sleep(1000);
         }
         return null;
     }
@@ -1351,7 +1426,7 @@ static class SubMon
     /// 未知のデバイスを勝手に書かないため、これはユーザー操作でだけ動く。</summary>
     public static void FlashManual()
     {
-        if (flashing) return;
+        if (flashing || updating) return;   // 更新スレッドとの同時書き込みも防ぐ
         flashing = true;
         var th = new System.Threading.Thread(delegate ()
         {
@@ -1370,7 +1445,7 @@ static class SubMon
                     return;
                 }
                 Store.LogCrash("atom: 手動フルフラッシュ開始 (" + port + ", v" + AtomFw.Ver + ")");
-                FlashBegin("ファーム書き込み  v" + AtomFw.Ver + "（新品/復旧）");
+                FlashBegin("ファーム書き込み  v" + AtomFw.Ver);
                 bool ok = false;
                 using (var rom = EnterRom(port))
                 {
@@ -1424,6 +1499,14 @@ static class SubMon
                         "本体のリセットボタンを約 2 秒長押しして緑 LED（ダウンロードモード）にしてから、もう一度実行してください。", true);
                     Status = "書き込み失敗";
                 }
+            }
+            catch (Exception ex)
+            {
+                // ポートが書き込み中に死ぬ（USB 再列挙など）とここに来る。
+                // スレッドを例外死させるとモーダルが固まったままになるので必ず畳む
+                Store.LogCrash("atom: 書き込みスレッド例外 " + ex.Message);
+                FlashEnd(false, "エラー: " + ex.Message);
+                Status = "書き込み失敗";
             }
             finally { flashing = false; }
         });
@@ -1601,7 +1684,7 @@ class CompactForm : Form
             if (r == DialogResult.OK) SubMon.UpdateNow();
         };
         menu.Items.Add(atomUpdate);
-        var atomFlash = new ToolStripMenuItem("ATOM にファームを書き込む（新品/復旧）");
+        var atomFlash = new ToolStripMenuItem("ATOM にファームを書き込む");
         atomFlash.Click += delegate
         {
             if (!AtomFw.Available)
@@ -1624,8 +1707,15 @@ class CompactForm : Form
         menu.Opening += delegate
         {
             atomItem.Text = "サブモニタ (ATOM)  ―  " + SubMon.Status;
-            atomUpdate.Visible = SubMon.UpdateAvailable;
-            atomUpdate.Text = "ATOM ファームを更新  (v" + SubMon.DeviceFw + " → v" + AtomFw.Ver + ")";
+            // 常に見せる。更新できるときだけ有効、最新ならグレーアウト
+            bool can = SubMon.UpdateAvailable;
+            atomUpdate.Enabled = can;
+            if (can)
+                atomUpdate.Text = "ATOM ファームを更新  (v" + SubMon.DeviceFw + " → v" + AtomFw.Ver + ")";
+            else if (SubMon.Connected && AtomFw.Available)
+                atomUpdate.Text = "ATOM ファームを更新  (v" + SubMon.DeviceFw + " = 最新)";
+            else
+                atomUpdate.Text = "ATOM ファームを更新";
             atomFlash.Enabled = AtomFw.Available;
         };
 
