@@ -68,7 +68,7 @@ func Render(s *Snapshot, view, w int) string {
 }
 
 func header(s *Snapshot, view, w int) string {
-	title := cBold + cCyan + " Claude Token Monitor" + cReset
+	title := cBold + cCyan + " gClaudeTokenMonitor" + cReset
 	right := cGray + s.Now.Format("2006-01-02 15:04:05") + " " + cReset
 	tabs := ""
 	for i, n := range viewNames {

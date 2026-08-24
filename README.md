@@ -9,7 +9,7 @@ Go 標準ライブラリのみ・外部依存ゼロ・単一 exe。
 assistant メッセージの `usage` を集計して、トークン数とコストを 1 秒ごとに更新表示する。
 
 ```
- Claude Token Monitor                                    2026-08-18 02:33:27
+ gClaudeTokenMonitor                                     2026-08-18 02:33:27
  [LIVE] 2:DAILY 3:MODELS 4:PROJECTS 5:SESSIONS 6:BLOCKS
  -----------------------------------------------------------------------------
 
