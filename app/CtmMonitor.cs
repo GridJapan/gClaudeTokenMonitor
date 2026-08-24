@@ -447,6 +447,7 @@ static class Store
     {
         try
         {
+            Directory.CreateDirectory(Root);   // 初回起動の失敗時はまだ無い。証跡を失わない
             File.AppendAllText(Path.Combine(Root, "crash.log"),
                 DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " [UI] " + msg + "\r\n");
         }
@@ -480,6 +481,9 @@ static class Store
         catch { return false; }
     }
 
+    /// <summary>直近の ctm 起動失敗の理由。成功すれば空に戻る。</summary>
+    public static string StartError = "";
+
     public static void Run(string args, bool wait)
     {
         try
@@ -492,8 +496,15 @@ static class Store
             };
             var pr = Process.Start(psi);
             if (wait && pr != null) pr.WaitForExit(20000);
+            StartError = "";
         }
-        catch { }
+        catch (Exception ex)
+        {
+            // Smart App Control / SmartScreen のブロックや exe 不在はここに来る。
+            // 黙殺するとレコーダー無しのまま動き続けるので、証跡と表示用に残す
+            StartError = ex.Message;
+            LogCrash("start: " + CtmExe + " " + args + " — " + ex.Message);
+        }
     }
 
     /// <summary>トークンの表示単位。ウィンドウのクリックで切り替える。</summary>
@@ -2427,8 +2438,19 @@ class TrayApp : ApplicationContext
 
     void Toggle() { compact.Toggle(); }
 
+    bool startErrorShown;
+
     void UpdateTip()
     {
+        // レコーダーを起動できない環境（Smart App Control / SmartScreen のブロック等）は
+        // 「記録停止中」だけでは原因が分からないので、理由を一度だけ通知する
+        if (!startErrorShown && Store.StartError.Length > 0 && !Store.RecorderAlive())
+        {
+            startErrorShown = true;
+            icon.ShowBalloonTip(15000, "レコーダー (ctm.exe) を起動できません",
+                Store.StartError + "\nSmartScreen / Smart App Control にブロックされた場合の対処は、同梱 README の「つまずいたら」を参照。",
+                ToolTipIcon.Error);
+        }
         try
         {
             var s = Store.Latest();
