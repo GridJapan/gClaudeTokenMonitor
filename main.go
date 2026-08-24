@@ -15,7 +15,7 @@ import (
 	"unicode/utf8"
 )
 
-const version = "0.2.0"
+const version = "0.2.1"
 
 // ctm is a subcommand CLI. Running it bare opens the live view, which is the
 // common case; everything else is an explicit verb.
