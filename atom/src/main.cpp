@@ -18,7 +18,7 @@
 #include <math.h>
 #include "soc/rtc_cntl_reg.h"   // {"flash":1} でダウンロードモードに入るため
 
-static const char *FW_VER = "0.2.11";
+static const char *FW_VER = "0.2.12";
 
 // ---- 画面・色 ------------------------------------------------------------
 static const int W = 128, H = 128;
@@ -405,29 +405,25 @@ static void drawWater()
     // （波の山が底に薄く残るのも防ぐ）。
     float lvW = (rx.pctw < 0.5) ? (float)(H + 40) : levelFor(rx.pctw);
     float lvS = (rx.pct5 < 0.5) ? (float)(H + 40) : levelFor(rx.pct5);
+    // Win と同じ 2 層構成: 奥（週・紫）を塗ってから、手前（5h・青）を上書きする。
+    // 重なりは前面色で隠れるだけ（専用の第 3 色を使わない）ので、水面は 2 本。
     for (int x = 0; x < W; x++) {
         float yw = surfaceY(lvW, (float)x, 1.7f, 0.065f, waterPhase * 0.6 + 1.3);
         float ys = surfaceY(lvS, (float)x, 1.6f, 0.085f, waterPhase);
         int iw = (int)yw, is = (int)ys;
         if (iw < 0) iw = 0; if (iw > H) iw = H;
         if (is < 0) is = 0; if (is > H) is = H;
-        int top = iw < is ? iw : is;      // 高い方（画面上で上）の水面
-        int bot = iw < is ? is : iw;
-        uint16_t onlyC  = iw < is ? C_W_PURP : C_W_BLUE;   // 単層部分の色
-        uint16_t onlyD  = iw < is ? C_W_PURP_D : C_W_BLUE_D;
-        // 単層部分（深いところは暗色に切り替え）
-        if (bot > top) {
-            int deep = top + 26;
-            if (deep > bot) deep = bot;
-            content.drawFastVLine(x, top, deep - top, onlyC);
-            if (bot > deep) content.drawFastVLine(x, deep, bot - deep, onlyD);
+        // 奥: 週（紫）を水面から底まで（浅い 26px を明色、以下を深色）
+        if (iw < H) {
+            int deep = iw + 26; if (deep > H) deep = H;
+            content.drawFastVLine(x, iw, deep - iw, C_W_PURP);
+            if (H > deep) content.drawFastVLine(x, deep, H - deep, C_W_PURP_D);
         }
-        // 両層が重なる部分
-        if (H > bot) {
-            int deep = bot + 26;
-            if (deep > H) deep = H;
-            content.drawFastVLine(x, bot, deep - bot, C_W_BOTH);
-            if (H > deep) content.drawFastVLine(x, deep, H - deep, C_W_BOTH_D);
+        // 手前: 5h（青）を水面から底まで上書き
+        if (is < H) {
+            int deep = is + 26; if (deep > H) deep = H;
+            content.drawFastVLine(x, is, deep - is, C_W_BLUE);
+            if (H > deep) content.drawFastVLine(x, deep, H - deep, C_W_BLUE_D);
         }
         // 水面線（1px）
         if (iw >= 0 && iw < H) content.drawPixel(x, iw, C_SURF_W);
