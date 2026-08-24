@@ -68,10 +68,14 @@ static class Store
     {
         get
         {
-            string local = Path.Combine(
-                Path.GetDirectoryName(Application.ExecutablePath) ?? ".", "ctm.exe");
-            // 同じフォルダの ctm.exe を使う。無ければ PATH に任せる。
-            return File.Exists(local) ? local : "ctm.exe";
+            // zip 配布は「人間が起動する CtmMonitor.exe だけを直下に置き、
+            // CLI の ctm.exe は bin\ に隔離する」構成（誤ダブルクリック防止）。
+            // ソースビルドは両方 bin\ に並ぶ。同じフォルダ → bin\ → PATH の順に探す。
+            string dir = Path.GetDirectoryName(Application.ExecutablePath) ?? ".";
+            string local = Path.Combine(dir, "ctm.exe");
+            if (File.Exists(local)) return local;
+            string sub = Path.Combine(dir, "bin", "ctm.exe");
+            return File.Exists(sub) ? sub : "ctm.exe";
         }
     }
 

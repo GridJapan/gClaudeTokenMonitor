@@ -35,14 +35,17 @@ Windows 10/11 標準搭載の .NET Framework で動く。Go / Git / Python が�
 手順:
 
 1. [Releases](https://github.com/GridJapan/gClaudeTokenMonitor/releases) から `ctm-*-windows-amd64.zip` をダウンロード
-2. 任意のフォルダ（例 `C:\tools\ctm`）に展開（2 つの exe は同じフォルダに置く）
-3. `CtmMonitor.exe` をダブルクリック → レコーダー（ctm.exe）も自動で起動する
+2. 任意のフォルダ（例 `C:\tools\ctm`）に展開（フォルダ構成は変えない）
+3. 直下にある `CtmMonitor.exe` をダブルクリック → レコーダー（`bin\ctm.exe`）も自動で起動する
 4. 常用するなら右クリック →「**Windows 起動時に開始**」
 
-動作確認（zip はフラット構成なので `bin\` は付けない）:
+zip の直下に置いてある exe は人間が起動する `CtmMonitor.exe` だけ。
+CLI の `ctm.exe` は間違えてダブルクリックしないよう `bin\` に入れてある。
+
+動作確認:
 
 ```powershell
-.\ctm.exe status     # 「レコーダー: 稼働中」と本日の記録が出れば OK
+.\bin\ctm.exe status     # 「レコーダー: 稼働中」と本日の記録が出れば OK
 ```
 
 つまずいたら:
@@ -50,7 +53,7 @@ Windows 10/11 標準搭載の .NET Framework で動く。Go / Git / Python が�
 - **SmartScreen に止められた** → exe を右クリック → プロパティ →「許可する」にチェック → OK
 - **Smart App Control が有効な PC** → ダウンロードした未署名 exe は解除不能でブロックされる。
   [ソースからビルド](#ビルドと実行)すれば通る（ローカルビルド品が通ることは実機確認済み）
-- ATOMS3R サブモニタは **v0.1.0 の zip には未収録**（v0.2 で提供予定。main ブランチでは動く）
+- ATOMS3R サブモニタは **v0.1.x の zip には未収録**（v0.2 で提供予定。main ブランチでは動く）
 
 ## ビルドと実行
 
