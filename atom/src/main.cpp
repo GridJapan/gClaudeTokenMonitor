@@ -18,7 +18,7 @@
 #include <math.h>
 #include "soc/rtc_cntl_reg.h"   // {"flash":1} でダウンロードモードに入るため
 
-static const char *FW_VER = "0.2.7";
+static const char *FW_VER = "0.2.8";
 
 // ---- 画面・色 ------------------------------------------------------------
 static const int W = 128, H = 128;
@@ -149,6 +149,7 @@ static float  chop = 0;              // 波の荒れ
 static float  m2 = 0, m2v = 0;       // 中央がぼよんと跳ねる対称モード
 static float  shakeGlow = 0;         // 振りの激しさ（0..1、UI の演出強度に使える）
 static float  prevAx = 0, prevAy = 0;// 加速度の前フレーム値（ジャーク＝急な振りの検出）
+static float  tiltPix = 0;           // 傾きによる水面の傾斜（px）。+ で画面右が低い
 static double waterPhase = 0;
 static int    glintFor = 0;
 static char   curPer[8] = "5H";
@@ -315,6 +316,22 @@ static void updateOrientation()
     m2v += jx * 0.9f;
     prevAx = ax; prevAy = ay;
     if (m2v > 3.5f) m2v = 3.5f; else if (m2v < -3.5f) m2v = -3.5f;   // 暴走防止
+
+    // ---- 傾き → 水が低い側へ寄る（重力に準拠） ------------------------------
+    // 画面横方向の重力成分 gh（+ で画面右が低い）を、今の表示向きから取る。
+    // 表示は 0/90/180/270 に自動回転するので、その向きごとに横成分を選ぶ。
+    // 90/270 の符号は実機の軸配置で反転し得るので、4 向き回して確認すること。
+    float gh;
+    switch (targetAng) {
+        case 90:  gh =  ay; break;
+        case 180: gh = -ax; break;
+        case 270: gh = -ay; break;
+        default:  gh =  ax; break;   // 0°
+    }
+    // 低い側で水位が上がる = その側の水面 y を小さく（画面上で高く）する。
+    // 水面には -tiltPix*(u-0.5) を足す（右が低い→右で y が減る）。なめらかに追従。
+    tiltPix = tiltPix * 0.85f + (gh * 60.0f) * 0.15f;
+    if (tiltPix > 34.0f) tiltPix = 34.0f; else if (tiltPix < -34.0f) tiltPix = -34.0f;
     // 演出強度（0..1）。激しいほど 1 へ。ゆっくり減衰。
     float target01 = fminf(1.0f, shake / 350.0f + fabsf(jx) * 0.8f);
     if (target01 > shakeGlow) shakeGlow = target01;
@@ -374,6 +391,7 @@ static float surfaceY(float level, float x, float amp, float k, double phase)
     float u = x / (float)W;
     float a = amp * (1.0f + chop * 1.8f);
     return level
+        - tiltPix * (u - 0.5f)                        // 傾き: 低い側で水位が上がる
         + m2 * cosf(2.0f * (float)M_PI * u) * 0.5f
         + a * sinf(x * k + (float)phase)
         + a * 0.55f * sinf(x * k * 2.6f - (float)phase * 1.6f);
