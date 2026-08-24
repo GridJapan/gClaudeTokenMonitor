@@ -224,7 +224,9 @@ func viewTable(rows []KV, label string, w, limit int) []string {
 }
 
 func sessionsView(s *Snapshot, w int) []string {
-	projW := maxi(8, w-84)
+	// データ行は「スペース + 2 文字マーク」で始まりヘッダより 1 文字広い。
+	// 幅いっぱいに作ると 1 文字はみ出して全行が折り返すので、行側の 85 を基準にする
+	projW := maxi(8, w-85)
 	out := []string{"",
 		fmt.Sprintf("  %s%-38s %-*s %11s %11s %8s %9s%s",
 			cBold+cWhite, "SESSION", projW, "PROJECT", "LAST", "TOKENS", "MSGS", "COST", cReset),
