@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gClaudeTokenMonitor (ctm) — always-on token metering for Claude Code</title>
+<meta name="description" content="A terminal monitor that meters Claude Code token usage and cost in real time. Written in Go, zero dependencies, single exe. Always-on recording, 5-hour blocks, official plan-usage cross-checks.">
+<meta property="og:title" content="gClaudeTokenMonitor (ctm)">
+<meta property="og:description" content="Always-on token metering for Claude Code. Zero-dependency, single-exe terminal monitor.">
+<meta property="og:image" content="https://gridjapan.github.io/gClaudeTokenMonitor/assets/img/tui-live.png">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23050805'/%3E%3Crect x='2' y='3' width='3' height='10' fill='%234dff88'/%3E%3Crect x='7' y='6' width='3' height='7' fill='%2329c862'/%3E%3Crect x='12' y='2' width='2' height='11' fill='%23ffb347'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DotGothic16&family=IBM+Plex+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <span class="logo">ctm</span>
+    <span class="links">
+      <a href="#demo">Demos</a>
+      <a href="#views">6 views</a>
+      <a href="#record">Always-on</a>
+      <a href="#limits">Plan limits</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/GridJapan/gClaudeTokenMonitor">GitHub</a>
+    </span>
+    <span class="lang">EN | <a href="jp/">日本語</a></span>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <pre class="boot" id="boot" data-lines='[
+      [200, "&gt; ctm record -quiet"],
+      [700, "<span class=\"ok\">recorder: running</span>  <span class=\"c\">tailing ~/.claude/projects (200ms)</span>"],
+      [500, "&gt; ctm"],
+      [600, "<span class=\"ok\">TOTAL 269.78M tokens  $623.71</span>  <span class=\"c\">1,572 msgs / cache-r 85.4%</span>"]
+    ]'></pre>
+    <h1>Meter your Claude Code burn.<br>Always on.</h1>
+    <p class="sub">
+      <b>gClaudeTokenMonitor (ctm)</b> is a terminal monitor that tails Claude Code&#39;s
+      session logs and refreshes token counts and cost every second.
+      Go standard library only — <b>zero dependencies, a single exe</b>.
+      Ships with a taskbar companion UI and 5-minute sampling of your official plan usage.
+    </p>
+    <div class="badges">
+      <span class="badge hot">v0.1.1</span>
+      <span class="badge">Windows 10/11</span>
+      <span class="badge">Go / zero deps</span>
+      <span class="badge">MIT License</span>
+    </div>
+    <div class="cta">
+      <a class="btn" href="https://github.com/GridJapan/gClaudeTokenMonitor/releases/latest">↓ Download zip</a>
+      <a class="btn ghost" href="https://github.com/GridJapan/gClaudeTokenMonitor">View source on GitHub</a>
+    </div>
+    <div class="crt glow">
+      <img src="assets/img/tui-live.png" alt="ctm LIVE view: totals, cost, the current 5-hour block with burn rate, a 60-minute sparkline, per-model breakdown and recent messages on one screen" width="985" height="692">
+    </div>
+    <p class="note" style="margin-top:10px">Numbers in the screenshots on this page are synthetic demo data.</p>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <p class="secno">WHAT IS THIS</p>
+    <h2>It just reads the logs. No API key, no setup.</h2>
+    <p>
+      Claude Code already writes every session to <code>~/.claude/projects/**/*.jsonl</code>.
+      ctm <b>tails</b> those logs and aggregates the usage of each assistant message.
+      It never touches the sessions being measured — <b>zero observer effect</b>.
+    </p>
+    <p>
+      Claude Code&#39;s logs write the same message multiple times (~1.7× inflation, measured);
+      ctm dedupes on <code>message.id + requestId</code>. Cache writes (5-minute and 1-hour)
+      and cache reads are priced at their real rates (1.25× / 2.0× / 0.1×).
+    </p>
+  </div>
+</section>
+
+<section id="demo">
+  <div class="wrap">
+    <p class="secno">DEMO 01 — LIVE</p>
+    <h2>Are we burning right now — and how long until the wall?</h2>
+    <div class="cols">
+      <div>
+        <p>
+          ctm auto-detects the <b>5-hour blocks</b> that rate limits actually operate on,
+          and shows a progress bar, burn rate (tok/min) and a <b>projection at block end</b>.
+          The last 60 minutes render as a sparkline, so you can see exactly when the fire happened.
+        </p>
+        <p class="dim">
+          Refreshes every second. <kbd>1</kbd>–<kbd>6</kbd> switch views, <kbd>r</kbd> rescans,
+          <kbd>q</kbd> quits.
+        </p>
+      </div>
+      <div class="crt"><img src="assets/img/tui-blocks.png" alt="BLOCKS view: history of 5-hour blocks with tokens, message counts, cost and usage bars" loading="lazy" width="985" height="692"></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="secno">DEMO 02 — TASKBAR</p>
+    <h2>When the aquarium fills up, take a break.</h2>
+    <p>
+      <b>CtmMonitor</b> is a small always-on-taskbar window. It draws your 5-hour limit
+      (front, blue) and weekly limit (back, purple) as a two-layer aquarium, and every burst
+      of consumption floats up as a <b>+N particle</b> tagged with the project that caused it.
+      Drag the window and the water sloshes.
+    </p>
+    <div class="aqua-row">
+      <div class="crt"><img src="assets/img/aqua-front.png" alt="CtmMonitor aquarium UI with a +45.6K float showing the frontend project as its source" loading="lazy" width="300" height="300"></div>
+      <div class="crt"><img src="assets/img/aqua-big.png" alt="Big layout: a large 18.09M token counter above the aquarium, with 5h 9% and week 15% readings" loading="lazy" width="300" height="300"></div>
+      <div class="crt"><img src="assets/img/aqua-3xb.png" alt="Multiple +N floats from different projects stacking up at once" loading="lazy" width="300" height="300"></div>
+    </div>
+    <p class="note" style="margin-top:12px">Click to cycle display units (Auto / K / M / RAW) and layouts. Right-click → &quot;Start with Windows&quot; to keep it resident.</p>
+  </div>
+</section>
+
+<section id="views">
+  <div class="wrap">
+    <p class="secno">DEMO 03 — VIEWS</p>
+    <h2>Six angles. One keystroke apart.</h2>
+    <p>
+      By day, by model, by project, by session, by 5-hour block.
+      &quot;How much did yesterday cost?&quot; &quot;Which project is eating the budget?&quot;
+      &quot;Which sessions are alive right now?&quot; — instant answers.
+    </p>
+    <div class="gallery">
+      <figure class="shot">
+        <div class="crt"><img src="assets/img/tui-daily.png" alt="DAILY view: per-day input, cache-write, cache-read, output, total and cost" loading="lazy" width="985" height="692"></div>
+        <figcaption><b>2: DAILY</b> — per day, with cache breakdown and daily cost</figcaption>
+      </figure>
+      <figure class="shot">
+        <div class="crt"><img src="assets/img/tui-models.png" alt="MODELS view: consumption and cost per model" loading="lazy" width="985" height="692"></div>
+        <figcaption><b>3: MODELS</b> — per model: fable / opus / sonnet / haiku share</figcaption>
+      </figure>
+      <figure class="shot">
+        <div class="crt"><img src="assets/img/tui-projects.png" alt="PROJECTS view: consumption and cost per working directory" loading="lazy" width="985" height="692"></div>
+        <figcaption><b>4: PROJECTS</b> — per project (cwd)</figcaption>
+      </figure>
+      <figure class="shot">
+        <div class="crt"><img src="assets/img/tui-sessions.png" alt="SESSIONS view: one row per session, sessions active in the last 30 minutes are starred" loading="lazy" width="985" height="692"></div>
+        <figcaption><b>5: SESSIONS</b> — per session; <span style="color:var(--green)">*</span> marks activity in the last 30 min</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section id="record">
+  <div class="wrap">
+    <p class="secno">DEMO 04 — ALWAYS-ON</p>
+    <h2>Stop &quot;preparing to measure&quot;. It&#39;s already measured.</h2>
+    <div class="cols rev">
+      <div class="crt"><img src="assets/img/logviewer.png" alt="History viewer: per-day message detail with per-prompt breakdown" loading="lazy" width="985" height="692"></div>
+      <div>
+        <p>
+          The resident recorder <code>ctm record</code> archives every session into
+          <code>~/.ctm/</code>, append-only. However many Claude Code windows you open,
+          whenever you start a new session — it&#39;s recorded, no configuration.
+        </p>
+        <p>Measuring becomes <b>slicing a time range after the fact</b>:</p>
+        <div class="term">
+          <div class="bar"><span class="dots">●●●</span> ctm query <button class="copybtn">copy</button></div>
+          <pre><span class="c">$</span> ctm query -from "13:00" -session 1a2b3c4d</pre>
+        </div>
+        <p class="dim">
+          Survives reboots by resuming from byte offsets (no gaps, no double counting).
+          The UI&#39;s history window drills down to <b>per-prompt breakdowns</b>.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="limits">
+  <div class="wrap">
+    <p class="secno">DEMO 05 — PLAN LIMITS</p>
+    <h2>Official usage % and measured burn, on the same line.</h2>
+    <p>
+      ctm fetches the <b>official usage percentages</b> Claude Code shows for your
+      5-hour and weekly limits, and records them next to what ctm measured in the same window.
+      Knowing &quot;at X% we had consumed Y&quot; lets you <b>reverse-engineer the window capacity</b>.
+    </p>
+    <div class="term">
+      <div class="bar"><span class="dots">●●●</span> ctm limits</div>
+      <pre><span class="c">$</span> ctm limits
+
+plan usage limits  max / default_claude_max_20x
+
+  5-hour limit
+   usage     <span class="g">0.0%</span> ............................
+   resets    in 4h55m (08-22 20:09)
+   measured  7 messages / 3.28M tokens / $2.074
+
+<span class="a">*</span> weekly - all models
+   usage     <span class="a">8.0%</span> ##..........................
+   resets    in 106h45m (08-27 01:59)
+   measured  1,036 messages / 275.44M tokens / $231.58
+   capacity  3.44G tokens / <span class="g">≈ $2895</span> (implied from this reading)
+   left      <span class="g">≈ $2663</span></pre>
+    </div>
+    <p class="dim">
+      Sampled every 5 minutes by the resident recorder. With multiple machines, the asymmetry
+      — % is account-wide, measurements are per-machine — even lets you estimate what your
+      other machines are burning.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="secno">FEATURES</p>
+    <h2>Feature checklist</h2>
+    <ul class="checks">
+      <li><b>Dedup</b> — message.id + requestId (without it you overcount ~2×)</li>
+      <li><b>Incremental reads</b> — byte offsets; partial lines carried to the next tick</li>
+      <li><b>Cache-aware pricing</b> — 5m/1h writes and reads at their real rates</li>
+      <li><b>5-hour block detection</b> — the actual rate-limit window, with history</li>
+      <li><b>Burn rate &amp; projection</b> — linear extrapolation from the last 5 minutes</li>
+      <li><b>-session new</b> — meter only a session you&#39;re about to start</li>
+      <li><b>-since-now</b> — meter only from this moment on</li>
+      <li><b>ctm query</b> — slice the archive by time range; detects active work clusters</li>
+      <li><b>Official usage recording</b> — 5h / weekly % next to measured burn</li>
+      <li><b>JSON output</b> — pure ASCII, script-friendly (PowerShell / jq)</li>
+      <li><b>Crash auto-recovery</b> — the UI supervises the recorder and restarts it with evidence</li>
+      <li><b>Double-start protection</b> — heartbeat lock prevents duplicate recording</li>
+      <li class="todo"><b>ATOMS3R sub-monitor</b> — a desk-top USB display (planned for v0.2)</li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="secno">VS</p>
+    <h2>Compared with the usual ways</h2>
+    <div class="tablewrap">
+      <table class="cmp">
+        <thead>
+          <tr><th></th><th>Claude Code&#39;s /cost etc.</th><th>Run-on-demand usage CLIs</th><th class="hl">ctm</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Real-time display</td><td class="m">current session only</td><td class="n">✕ (only when you run it)</td><td class="y hl">◯ 1s refresh, across all sessions</td></tr>
+          <tr><td>Always-on recording</td><td class="n">✕</td><td class="n">✕</td><td class="y hl">◯ resident recorder (append-only)</td></tr>
+          <tr><td>Setup before measuring</td><td class="m">none</td><td class="m">run it each time</td><td class="y hl">none — already recorded, slice later</td></tr>
+          <tr><td>Cross-check with official %</td><td class="m">% only</td><td class="n">✕</td><td class="y hl">◯ % and measured burn on one line</td></tr>
+          <tr><td>Per-cache-type pricing</td><td class="n">—</td><td class="m">depends on tool</td><td class="y hl">◯ 5m/1h/read split (20× price spread)</td></tr>
+          <tr><td>Install</td><td class="m">—</td><td class="m">may need a runtime</td><td class="y hl">unzip only, zero dependencies</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note" style="margin-top:10px">Costs are estimates at Anthropic&#39;s public list prices. On flat-rate plans (Pro / Max) no actual billing occurs.</p>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <p class="secno">INSTALL</p>
+    <h2>Install (just unzip)</h2>
+    <p>
+      Two prerequisites: the PC <b>uses Claude Code</b> (ctm reads its logs), and — only if you
+      want plan-usage percentages — you are <b>logged in</b> to <code>claude</code>.
+      No Go, no .NET, no Python to install.
+    </p>
+    <ol class="steps">
+      <li>Download <code>ctm-*-windows-amd64.zip</code> from <a href="https://github.com/GridJapan/gClaudeTokenMonitor/releases/latest">Releases</a></li>
+      <li>&quot;Extract All&quot; into any folder (e.g. <code>C:\tools\ctm</code>) — keep the folder layout</li>
+      <li>Double-click <b>CtmMonitor.exe</b> at the top level → the recorder (bin\ctm.exe) starts automatically</li>
+      <li>For daily use: right-click → <b>&quot;Start with Windows&quot;</b></li>
+    </ol>
+    <pre class="tree">ctm-0.1.1-windows-amd64.zip
+├── <span class="g">CtmMonitor.exe</span>   <span class="a">← the one you double-click</span>
+├── bin\ctm.exe      CLI / recorder (started automatically)
+├── README.md / INSTALL.txt / LICENSE</pre>
+    <div class="term">
+      <div class="bar"><span class="dots">●●●</span> verify <button class="copybtn">copy</button></div>
+      <pre><span class="c">$</span> .\bin\ctm.exe status
+<span class="g">recorder: running</span>
+  archive      C:\Users\you\.ctm
+  today        588 messages / 100.77M tokens / $242.97</pre>
+    </div>
+    <div class="warnbox">
+      <b>If SmartScreen blocks it</b>: right-click the exe → Properties → check &quot;Unblock&quot; → OK.<br>
+      <b>On PCs with Smart App Control enabled</b>, downloaded unsigned exes are blocked with no override
+      (since v0.1.1 the block is surfaced via a balloon and crash.log). Build from source instead:
+    </div>
+    <h3>Building from source</h3>
+    <div class="term">
+      <div class="bar"><span class="dots">●●●</span> build from source <button class="copybtn">copy</button></div>
+      <pre><span class="c">$</span> winget install Git.Git GoLang.Go
+<span class="c">$</span> git clone https://github.com/GridJapan/gClaudeTokenMonitor.git
+<span class="c">$</span> cd gClaudeTokenMonitor
+<span class="c">$</span> .\build.ps1
+<span class="c">$</span> .\bin\CtmMonitor.exe</pre>
+    </div>
+    <p class="dim">All it takes is Go 1.22+ and Git. CtmMonitor builds with the csc.exe that ships with Windows.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="secno">NEXT</p>
+    <h2>v0.2: a dedicated gauge on your desk.</h2>
+    <p>
+      In development: an M5Stack <b>ATOMS3R</b> (128×128 IPS, IMU) as a display-only sub-monitor.
+      CtmMonitor streams state over USB every 200ms; the device renders the two-layer aquarium
+      and spring counters at 30fps. Physically rotate the unit and the display rolls to follow
+      gravity. Working on the main branch today, shipping in the v0.2 zip.
+    </p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <pre class="art">┌──────────────────────────────────────────────────────────┐
+│  gClaudeTokenMonitor — always measured. never prepared.  │
+└──────────────────────────────────────────────────────────┘</pre>
+    <p>
+      © 2026 GridJapan ／ <a href="https://github.com/GridJapan/gClaudeTokenMonitor/blob/main/LICENSE">MIT License</a>
+      ／ <a href="https://github.com/GridJapan/gClaudeTokenMonitor">GridJapan/gClaudeTokenMonitor</a>
+      ／ <a href="https://github.com/GridJapan/gClaudeTokenMonitor/releases/latest">Latest release</a>
+    </p>
+    <p class="dim" style="margin-top:8px">
+      Screenshot numbers are synthetic demo data. Cost figures are estimates at Anthropic&#39;s public
+      list prices; flat-rate plans incur no actual billing.
+    </p>
+  </div>
+</footer>
+
+<script src="assets/site.js"></script>
+</body>
+</html>

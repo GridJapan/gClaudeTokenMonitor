@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gClaudeTokenMonitor (ctm) — Claude Code のトークン消費を常時計測する</title>
+<meta name="description" content="Claude Code のトークン消費量とコストをリアルタイム計測するターミナルモニター。Go 製・依存ゼロ・単一 exe。常時記録・5 時間ブロック・プラン使用率の突き合わせ。">
+<meta property="og:title" content="gClaudeTokenMonitor (ctm)">
+<meta property="og:description" content="Claude Code のトークン消費を常時計測する。依存ゼロ・単一 exe のターミナルモニター。">
+<meta property="og:image" content="https://gridjapan.github.io/gClaudeTokenMonitor/assets/img/tui-live.png">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23050805'/%3E%3Crect x='2' y='3' width='3' height='10' fill='%234dff88'/%3E%3Crect x='7' y='6' width='3' height='7' fill='%2329c862'/%3E%3Crect x='12' y='2' width='2' height='11' fill='%23ffb347'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DotGothic16&family=IBM+Plex+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <span class="logo">ctm</span>
+    <span class="links">
+      <a href="#demo">機能デモ</a>
+      <a href="#views">6 ビュー</a>
+      <a href="#record">常時記録</a>
+      <a href="#limits">使用制限</a>
+      <a href="#install">インストール</a>
+      <a href="https://github.com/GridJapan/gClaudeTokenMonitor">GitHub</a>
+    </span>
+    <span class="lang"><a href="../">EN</a> | 日本語</span>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <pre class="boot" id="boot" data-lines='[
+      [200, "&gt; ctm record -quiet"],
+      [700, "<span class=\"ok\">レコーダー: 稼働中</span>  <span class=\"c\">〜/.claude/projects を差分読み (200ms)</span>"],
+      [500, "&gt; ctm"],
+      [600, "<span class=\"ok\">TOTAL 269.78M tokens  $623.71</span>  <span class=\"c\">1,572 msgs / cache-r 85.4%</span>"]
+    ]'></pre>
+    <h1>Claude Code の消費を、<br>常時計測する。</h1>
+    <p class="sub">
+      <b>gClaudeTokenMonitor (ctm)</b> は、Claude Code のセッションログを差分読みして
+      トークン消費量とコストを 1 秒ごとに更新表示するターミナルモニター。
+      Go 標準ライブラリのみ・<b>外部依存ゼロ・単一 exe</b>。
+      タスクバー常駐 UI と、5 分ごとの公式プラン使用率の記録つき。
+    </p>
+    <div class="badges">
+      <span class="badge hot">v0.1.1</span>
+      <span class="badge">Windows 10/11</span>
+      <span class="badge">Go / 依存ゼロ</span>
+      <span class="badge">MIT License</span>
+    </div>
+    <div class="cta">
+      <a class="btn" href="https://github.com/GridJapan/gClaudeTokenMonitor/releases/latest">↓ zip をダウンロード</a>
+      <a class="btn ghost" href="https://github.com/GridJapan/gClaudeTokenMonitor">GitHub でソースを見る</a>
+    </div>
+    <div class="crt glow">
+      <img src="../assets/img/tui-live.png" alt="ctm の LIVE ビュー。総トークン数・コスト・5 時間ブロックの進行・直近 60 分のスパークライン・モデル別内訳・直近メッセージが 1 画面に表示されている" width="985" height="692">
+    </div>
+    <p class="note" style="margin-top:10px">このページのスクリーンショットの数値は、デモ用に合成した計測データです。</p>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <p class="secno">WHAT IS THIS</p>
+    <h2>ログを読むだけ。API キーも設定も不要。</h2>
+    <p>
+      Claude Code は全セッションの応答を <code>~/.claude/projects/**/*.jsonl</code> に書き残している。
+      ctm はそのログを <b>tail（差分読み）</b>して、assistant メッセージの usage を集計する。
+      計測対象のセッションには一切触れないので、<b>観測者効果が起きない</b>。
+    </p>
+    <p>
+      同一メッセージが複数行書かれる Claude Code のログ仕様（実測 1.7 倍の水増し）は
+      <code>message.id + requestId</code> をキーに重複排除。キャッシュ書き込み 5 分 / 1 時間 /
+      読み出しを分けて、それぞれ正しい料金レート（1.25x / 2.0x / 0.1x）で換算する。
+    </p>
+  </div>
+</section>
+
+<section id="demo">
+  <div class="wrap">
+    <p class="secno">DEMO 01 — LIVE</p>
+    <h2>いま燃えているか、あと何分もつか。</h2>
+    <div class="cols">
+      <div>
+        <p>
+          レートリミットの実体である <b>5 時間ブロック</b>を自動検出し、
+          進行バー・バーンレート（tok/min）・<b>ブロック終了時点の着地見込み</b>を表示する。
+          直近 60 分はスパークラインで、どの瞬間に燃えたかが分かる。
+        </p>
+        <p class="dim">
+          更新は 1 秒ごと。<kbd>1</kbd>〜<kbd>6</kbd> でビュー切替、<kbd>r</kbd> で再スキャン、
+          <kbd>q</kbd> で終了。
+        </p>
+      </div>
+      <div class="crt"><img src="../assets/img/tui-blocks.png" alt="BLOCKS ビュー。5 時間ブロックごとのトークン・メッセージ数・コスト・使用量バーの履歴" loading="lazy" width="985" height="692"></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="secno">DEMO 02 — TASKBAR</p>
+    <h2>水槽が満ちたら、休憩の合図。</h2>
+    <p>
+      <b>CtmMonitor</b> はタスクバーに常駐する小さな窓。5 時間制限（手前・青）と週間制限（奥・紫）を
+      2 層の水槽として描き、消費が発生するたびに <b>+N フロート</b>が発生源のプロジェクト名を添えて浮かぶ。
+      ドラッグすると水面が揺れる物理演出つき。
+    </p>
+    <div class="aqua-row">
+      <div class="crt"><img src="../assets/img/aqua-front.png" alt="CtmMonitor の水槽 UI。+45.6K のフロートと frontend の発生源表示" loading="lazy" width="300" height="300"></div>
+      <div class="crt"><img src="../assets/img/aqua-big.png" alt="Big レイアウト。18.09M tokens の大型カウンタと水槽、5h 9% / week 15% の表示" loading="lazy" width="300" height="300"></div>
+      <div class="crt"><img src="../assets/img/aqua-3xb.png" alt="複数プロジェクトの +N フロートが同時に積み上がっている様子" loading="lazy" width="300" height="300"></div>
+    </div>
+    <p class="note" style="margin-top:12px">クリックで表示単位（Auto / K / M / RAW）とレイアウトを切替。右クリック →「Windows 起動時に開始」で常駐化。</p>
+  </div>
+</section>
+
+<section id="views">
+  <div class="wrap">
+    <p class="secno">DEMO 03 — VIEWS</p>
+    <h2>6 つの切り口。キー 1 つで切替。</h2>
+    <p>
+      日別・モデル別・プロジェクト別・セッション別・5h ブロック別。
+      「昨日いくら使ったか」「どのプロジェクトが食っているか」「いま動いているセッションはどれか」が
+      即答できる。
+    </p>
+    <div class="gallery">
+      <figure class="shot">
+        <div class="crt"><img src="../assets/img/tui-daily.png" alt="DAILY ビュー。日別の input / cache-write / cache-read / output / 合計 / コスト" loading="lazy" width="985" height="692"></div>
+        <figcaption><b>2: DAILY</b> — 日別。キャッシュ内訳と日次コスト</figcaption>
+      </figure>
+      <figure class="shot">
+        <div class="crt"><img src="../assets/img/tui-models.png" alt="MODELS ビュー。モデル別の消費とコスト" loading="lazy" width="985" height="692"></div>
+        <figcaption><b>3: MODELS</b> — モデル別。fable / opus / sonnet / haiku の比率</figcaption>
+      </figure>
+      <figure class="shot">
+        <div class="crt"><img src="../assets/img/tui-projects.png" alt="PROJECTS ビュー。作業ディレクトリ別の消費とコスト" loading="lazy" width="985" height="692"></div>
+        <figcaption><b>4: PROJECTS</b> — プロジェクト（cwd）別</figcaption>
+      </figure>
+      <figure class="shot">
+        <div class="crt"><img src="../assets/img/tui-sessions.png" alt="SESSIONS ビュー。セッション別の一覧。直近 30 分に動きがあるものに * マーク" loading="lazy" width="985" height="692"></div>
+        <figcaption><b>5: SESSIONS</b> — セッション別。<span style="color:var(--green)">*</span> は直近 30 分に活動あり</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section id="record">
+  <div class="wrap">
+    <p class="secno">DEMO 04 — ALWAYS-ON</p>
+    <h2>「測ろうと思ってから準備する」のを、やめた。</h2>
+    <div class="cols rev">
+      <div class="crt"><img src="../assets/img/logviewer.png" alt="過去ログビューア。日付ごとのメッセージ明細と指示ごとの内訳" loading="lazy" width="985" height="692"></div>
+      <div>
+        <p>
+          常駐レコーダー <code>ctm record</code> が全セッションを <code>~/.ctm/</code> に
+          アーカイブし続ける。Claude Code を何個立ち上げても、途中で新しいセッションを開いても、
+          設定なしで記録される。
+        </p>
+        <p>
+          計測は<b>あとから期間を切り出すだけ</b>:
+        </p>
+        <div class="term">
+          <div class="bar"><span class="dots">●●●</span> ctm query <button class="copybtn">copy</button></div>
+          <pre><span class="c">$</span> ctm query -from "13:00" -session 1a2b3c4d</pre>
+        </div>
+        <p class="dim">
+          再起動してもバイトオフセットから再開（取りこぼし・二重記録なし）。
+          UI の「過去ログ」からは日別明細と<b>指示（プロンプト）ごとの内訳</b>も追える。
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="limits">
+  <div class="wrap">
+    <p class="secno">DEMO 05 — PLAN LIMITS</p>
+    <h2>公式の使用率と、実測の消費を同じ行に。</h2>
+    <p>
+      Claude Code が画面に出す「5 時間制限 / 週間制限」の<b>公式な使用率（%）</b>を
+      Anthropic の API から取得し、同じ時間窓で ctm が実測した消費と並べて記録する。
+      「何 % のとき、いくら分を消費していたか」が残るので、<b>窓の容量を逆算</b>できる。
+    </p>
+    <div class="term">
+      <div class="bar"><span class="dots">●●●</span> ctm limits</div>
+      <pre><span class="c">$</span> ctm limits
+
+プラン使用制限  max / default_claude_max_20x
+
+  5時間制限
+   使用率    <span class="g">0.0%</span> ............................
+   リセット  4h55m後 (08-22 20:09)
+   実測消費  7 メッセージ / 3.28M トークン / $2.074
+
+<span class="a">*</span> 週間・全モデル
+   使用率    <span class="a">8.0%</span> ##..........................
+   リセット  106h45m後 (08-27 01:59)
+   実測消費  1,036 メッセージ / 275.44M トークン / $231.58
+   窓の容量  3.44G トークン / <span class="g">$2895 相当</span>（この使用率からの逆算）
+   残り      <span class="g">$2663 相当</span></pre>
+    </div>
+    <p class="dim">
+      常駐レコーダーが既定で 5 分ごとにサンプリング。複数マシン運用では
+      「% はアカウント全体・実測はそのマシンの分だけ」という非対称を利用して、
+      他マシンの消費も推定できる。
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="secno">FEATURES</p>
+    <h2>機能一覧</h2>
+    <ul class="checks">
+      <li><b>重複排除</b> — message.id + requestId で水増しを除去（これをやらないと約 2 倍の過大計上）</li>
+      <li><b>差分読み</b> — バイトオフセット保持。書きかけ行は次回へ持ち越し</li>
+      <li><b>キャッシュ内訳</b> — 5m / 1h 書き込みと読み出しを別レートで課金換算</li>
+      <li><b>5h ブロック検出</b> — レートリミット窓の自動区切りと履歴</li>
+      <li><b>バーンレートと着地予測</b> — 直近 5 分から線形外挿</li>
+      <li><b>-session new</b> — これから始める別セッションだけを計測</li>
+      <li><b>-since-now</b> — 「今から先」だけを計測</li>
+      <li><b>ctm query</b> — アーカイブから期間切り出し・実稼働クラスタ検出</li>
+      <li><b>公式使用率の記録</b> — 5h / 週間の % と実測を同じ行に</li>
+      <li><b>JSON 出力</b> — 純 ASCII でスクリプト連携（PowerShell / jq）</li>
+      <li><b>クラッシュ自動復旧</b> — UI がレコーダーを監視し証跡を残して再起動</li>
+      <li><b>二重起動拒否</b> — ハートビート付きロックで多重記録を防止</li>
+      <li class="todo"><b>ATOMS3R サブモニタ</b> — 机上の USB 小型ディスプレイ（v0.2 で提供予定）</li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="secno">VS</p>
+    <h2>既存の見方との違い</h2>
+    <div class="tablewrap">
+      <table class="cmp">
+        <thead>
+          <tr><th></th><th>Claude Code の /cost 等</th><th>都度実行の集計 CLI</th><th class="hl">ctm</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>リアルタイム表示</td><td class="m">セッション内のみ</td><td class="n">✕（実行した瞬間だけ）</td><td class="y hl">◯ 1 秒更新・全セッション横断</td></tr>
+          <tr><td>常時記録</td><td class="n">✕</td><td class="n">✕</td><td class="y hl">◯ 常駐レコーダー（追記専用）</td></tr>
+          <tr><td>測り始めの準備</td><td class="m">不要</td><td class="m">その都度実行</td><td class="y hl">不要（常に記録済み。あとから切り出す）</td></tr>
+          <tr><td>公式使用率（%）との突合</td><td class="m">% 表示のみ</td><td class="n">✕</td><td class="y hl">◯ % と実測消費を同じ行に記録</td></tr>
+          <tr><td>キャッシュ種別ごとの料金レート</td><td class="n">—</td><td class="m">ツールによる</td><td class="y hl">◯ 5m/1h/read を分離（費用が 20 倍違う）</td></tr>
+          <tr><td>導入</td><td class="m">—</td><td class="m">ランタイムが要る場合あり</td><td class="y hl">zip 展開のみ・依存ゼロ</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note" style="margin-top:10px">表示コストはリスト価格ベースの推定値。定額プラン（Pro / Max）では実請求は発生しない。</p>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <p class="secno">INSTALL</p>
+    <h2>インストール（zip 展開だけ）</h2>
+    <p>
+      前提は 2 つ: その PC で <b>Claude Code を使っている</b>こと。
+      プラン使用率（%）も見たい場合は <code>claude</code> に<b>ログイン済み</b>であること。
+      Go / .NET / Python のインストールは不要。
+    </p>
+    <ol class="steps">
+      <li><a href="https://github.com/GridJapan/gClaudeTokenMonitor/releases/latest">Releases</a> から <code>ctm-*-windows-amd64.zip</code> をダウンロード</li>
+      <li>任意のフォルダ（例 <code>C:\tools\ctm</code>）に「すべて展開」（フォルダ構成は変えない）</li>
+      <li>直下の <b>CtmMonitor.exe</b> をダブルクリック → レコーダー（bin\ctm.exe）も自動で起動</li>
+      <li>常用するなら右クリック →「<b>Windows 起動時に開始</b>」</li>
+    </ol>
+    <pre class="tree">ctm-0.1.1-windows-amd64.zip
+├── <span class="g">CtmMonitor.exe</span>   <span class="a">← これをダブルクリック</span>
+├── bin\ctm.exe      CLI / レコーダー（自動起動される）
+├── README.md / INSTALL.txt / LICENSE</pre>
+    <div class="term">
+      <div class="bar"><span class="dots">●●●</span> 動作確認 <button class="copybtn">copy</button></div>
+      <pre><span class="c">$</span> .\bin\ctm.exe status
+<span class="g">レコーダー: 稼働中</span>
+  記録先       C:\Users\you\.ctm
+  本日の記録   588 メッセージ / 100.77M トークン / $242.97</pre>
+    </div>
+    <div class="warnbox">
+      <b>SmartScreen に止められたら</b>: exe を右クリック → プロパティ →「許可する」→ OK。<br>
+      <b>Smart App Control が有効な PC</b> では、ダウンロードした未署名 exe は解除不能でブロックされる
+      （v0.1.1 からはブロックされたことがバルーンと crash.log で分かる）。その場合は下のソースビルドで。
+    </div>
+    <h3>ソースからビルドする場合</h3>
+    <div class="term">
+      <div class="bar"><span class="dots">●●●</span> build from source <button class="copybtn">copy</button></div>
+      <pre><span class="c">$</span> winget install Git.Git GoLang.Go
+<span class="c">$</span> git clone https://github.com/GridJapan/gClaudeTokenMonitor.git
+<span class="c">$</span> cd gClaudeTokenMonitor
+<span class="c">$</span> .\build.ps1
+<span class="c">$</span> .\bin\CtmMonitor.exe</pre>
+    </div>
+    <p class="dim">必要なのは Go 1.22+ と Git だけ。CtmMonitor は Windows 標準の csc.exe でビルドされる。</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <p class="secno">NEXT</p>
+    <h2>v0.2: 机の上に、専用の計器を。</h2>
+    <p>
+      M5Stack <b>ATOMS3R</b>（128×128 IPS・IMU）を表示専用サブモニタにする機能を開発中。
+      PC の CtmMonitor が 200ms ごとに状態を USB へ送り、デバイス側が 2 層の水槽 +
+      スプリングカウンタを 30fps で描く。本体を物理的に回すと、表示が
+      「ボールが転がるように」重力方向へ追従する。main ブランチで動作中、v0.2 の zip に収録予定。
+    </p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <pre class="art">┌──────────────────────────────────────────────────────────┐
+│  gClaudeTokenMonitor — 計測は、常時。準備は、不要。      │
+└──────────────────────────────────────────────────────────┘</pre>
+    <p>
+      © 2026 GridJapan ／ <a href="https://github.com/GridJapan/gClaudeTokenMonitor/blob/main/LICENSE">MIT License</a>
+      ／ <a href="https://github.com/GridJapan/gClaudeTokenMonitor">GridJapan/gClaudeTokenMonitor</a>
+      ／ <a href="https://github.com/GridJapan/gClaudeTokenMonitor/releases/latest">最新リリース</a>
+    </p>
+    <p class="dim" style="margin-top:8px">
+      スクリーンショットの数値はデモ用の合成データ。コスト表示は Anthropic 公開リスト価格による推定値であり、
+      定額プランでは実際の請求は発生しない。
+    </p>
+  </div>
+</footer>
+
+<script src="../assets/site.js"></script>
+</body>
+</html>

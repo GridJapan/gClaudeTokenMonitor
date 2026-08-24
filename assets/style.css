@@ -1,0 +1,253 @@
+/* gClaudeTokenMonitor — GitHub Pages
+   テイスト: CRT ターミナル (蛍光グリーン / スキャンライン / ベゼル)。 */
+
+:root {
+  --bg: #050805;
+  --bg2: #0a120b;
+  --panel: #0b150d;
+  --line: #1d3a24;
+  --dim: #8fd3a3;
+  --fg: #c9f5d5;
+  --green: #4dff88;
+  --green-deep: #29c862;
+  --amber: #ffb347;
+  --red: #ff6b6b;
+  --cyan: #6ee7ff;
+  --glow: 0 0 6px rgba(77, 255, 136, .45), 0 0 24px rgba(77, 255, 136, .12);
+  --mono: "IBM Plex Mono", "Cascadia Mono", Consolas, "BIZ UDGothic", "MS Gothic", monospace;
+  --pixel: "DotGothic16", "IBM Plex Mono", monospace;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+body {
+  background:
+    radial-gradient(120% 90% at 50% 0%, #0c1a0e 0%, var(--bg) 58%),
+    var(--bg);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 15px;
+  line-height: 1.85;
+  overflow-x: hidden;
+}
+
+/* ---- CRT オーバーレイ ---- */
+body::before {
+  content: "";
+  position: fixed; inset: 0; z-index: 9999; pointer-events: none;
+  background: repeating-linear-gradient(0deg,
+    rgba(0, 0, 0, .21) 0px, rgba(0, 0, 0, .21) 1px,
+    transparent 1px, transparent 3px);
+}
+body::after {
+  content: "";
+  position: fixed; inset: 0; z-index: 9998; pointer-events: none;
+  background: radial-gradient(115% 100% at 50% 45%, transparent 62%, rgba(0, 0, 0, .5) 100%);
+}
+
+a { color: var(--cyan); text-decoration: none; }
+a:hover { color: #b1f1ff; text-decoration: underline; }
+::selection { background: var(--green); color: #04140a; }
+
+.wrap { max-width: 1060px; margin: 0 auto; padding: 0 22px; }
+
+/* ---- ナビ ---- */
+nav {
+  position: sticky; top: 0; z-index: 100;
+  background: rgba(4, 9, 5, .92);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(3px);
+}
+nav .wrap { display: flex; align-items: center; gap: 18px; height: 52px; }
+nav .logo {
+  color: var(--green); font-family: var(--pixel); font-size: 17px;
+  text-shadow: var(--glow); letter-spacing: .5px; white-space: nowrap;
+}
+nav .logo::before { content: "▮ "; animation: blink 1.1s steps(1) infinite; }
+nav .links { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12.5px; }
+nav .links a { color: var(--dim); }
+nav .links a:hover { color: var(--green); text-decoration: none; }
+nav .lang { margin-left: auto; font-size: 12.5px; color: var(--dim); white-space: nowrap; }
+nav .lang a { color: var(--amber); }
+@media (max-width: 720px) { nav .links { display: none; } }
+
+/* ---- ヒーロー ---- */
+header.hero { padding: 72px 0 40px; position: relative; }
+.boot {
+  color: var(--dim); font-size: 13px; margin-bottom: 26px; min-height: 5.5em;
+  white-space: pre-wrap;
+}
+.boot .ok { color: var(--green); }
+.boot .cursor { animation: blink .9s steps(1) infinite; color: var(--green); }
+@keyframes blink { 50% { opacity: 0; } }
+
+h1 {
+  font-family: var(--pixel);
+  font-size: clamp(30px, 5.4vw, 52px);
+  color: var(--green);
+  text-shadow: var(--glow);
+  line-height: 1.3;
+  margin-bottom: 14px;
+  font-weight: 400;
+}
+.hero .sub { color: var(--fg); font-size: clamp(15px, 2vw, 17px); max-width: 44em; }
+.hero .sub b { color: var(--amber); font-weight: 700; }
+
+.badges { display: flex; gap: 10px; margin: 22px 0 30px; flex-wrap: wrap; font-size: 12px; }
+.badge {
+  border: 1px solid var(--line); color: var(--dim);
+  padding: 3px 12px; border-radius: 3px; background: var(--bg2);
+}
+.badge.hot { color: var(--green); border-color: var(--green-deep); }
+
+.cta { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 44px; }
+.btn {
+  display: inline-block; padding: 11px 22px; font-family: var(--mono);
+  font-size: 14px; border-radius: 3px; border: 1px solid var(--green-deep);
+  color: var(--green); background: transparent; transition: all .15s;
+}
+.btn:hover { background: var(--green); color: #04140a; text-decoration: none; box-shadow: var(--glow); }
+.btn.ghost { border-color: var(--line); color: var(--dim); }
+.btn.ghost:hover { background: var(--bg2); color: var(--fg); box-shadow: none; }
+
+/* ---- CRT ベゼル (スクショ枠) ---- */
+.crt {
+  background: #111; border-radius: 10px; padding: 10px;
+  border: 1px solid #262626;
+  box-shadow:
+    inset 0 0 18px rgba(0, 0, 0, .85),
+    0 14px 42px rgba(0, 0, 0, .6),
+    0 0 0 1px #000;
+}
+.crt img { display: block; width: 100%; height: auto; border-radius: 5px; }
+.crt.glow { box-shadow: inset 0 0 18px rgba(0,0,0,.85), 0 14px 42px rgba(0,0,0,.6), 0 0 34px rgba(77,255,136,.09); }
+
+/* ---- セクション ---- */
+section { padding: 56px 0; border-top: 1px dashed var(--line); }
+.secno { color: var(--amber); font-size: 13px; letter-spacing: 2px; }
+.secno::after { content: " ───────────────"; color: var(--line); }
+h2 {
+  font-family: var(--pixel); font-weight: 400;
+  font-size: clamp(22px, 3.4vw, 30px);
+  color: var(--green); text-shadow: var(--glow);
+  margin: 8px 0 18px;
+}
+h3 { color: var(--amber); font-size: 16px; margin: 26px 0 8px; font-weight: 700; }
+section p { max-width: 46em; margin-bottom: 12px; color: var(--fg); }
+section p.dim, .dim { color: var(--dim); }
+.note { font-size: 12.5px; color: var(--dim); }
+.note::before { content: "※ "; color: var(--amber); }
+
+.cols { display: grid; grid-template-columns: 1.1fr .9fr; gap: 34px; align-items: center; }
+.cols.rev { grid-template-columns: .9fr 1.1fr; }
+@media (max-width: 860px) { .cols, .cols.rev { grid-template-columns: 1fr; } }
+
+/* ---- ターミナル風ブロック ---- */
+.term {
+  background: #030603; border: 1px solid var(--line); border-radius: 6px;
+  overflow: hidden; margin: 16px 0;
+}
+.term .bar {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--bg2); border-bottom: 1px solid var(--line);
+  padding: 6px 12px; font-size: 11.5px; color: var(--dim);
+}
+.term .bar .dots { color: var(--line); letter-spacing: 2px; }
+.term pre {
+  padding: 14px 16px; overflow-x: auto; font-size: 13px; line-height: 1.75;
+  color: var(--fg); font-family: var(--mono);
+}
+.term pre .g { color: var(--green); }
+.term pre .a { color: var(--amber); }
+.term pre .r { color: var(--red); }
+.term pre .c { color: var(--dim); }
+.term pre .p { color: var(--cyan); }
+
+.copybtn {
+  margin-left: auto; background: none; border: 1px solid var(--line);
+  color: var(--dim); font-family: var(--mono); font-size: 11px;
+  padding: 1px 10px; border-radius: 3px; cursor: pointer;
+}
+.copybtn:hover { color: var(--green); border-color: var(--green-deep); }
+
+kbd {
+  display: inline-block; min-width: 1.6em; text-align: center;
+  border: 1px solid var(--line); border-bottom-width: 3px; border-radius: 4px;
+  background: var(--bg2); color: var(--amber);
+  font-family: var(--mono); font-size: 12px; padding: 0 5px; line-height: 1.7;
+}
+
+/* ---- ギャラリー ---- */
+.gallery { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; margin-top: 22px; }
+@media (max-width: 720px) { .gallery { grid-template-columns: 1fr; } }
+.shot figcaption { font-size: 12.5px; color: var(--dim); margin-top: 8px; }
+.shot figcaption b { color: var(--amber); }
+
+.aqua-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 22px; }
+@media (max-width: 720px) { .aqua-row { grid-template-columns: 1fr; } }
+
+/* ---- チェックリスト ---- */
+ul.checks { list-style: none; max-width: 52em; columns: 2; column-gap: 40px; margin-top: 10px; }
+@media (max-width: 820px) { ul.checks { columns: 1; } }
+ul.checks li {
+  break-inside: avoid; margin-bottom: 9px; padding-left: 26px; position: relative;
+  color: var(--fg); font-size: 13.5px;
+}
+ul.checks li::before { content: "[x]"; position: absolute; left: 0; color: var(--green); }
+ul.checks li.todo::before { content: "[ ]"; color: var(--dim); }
+ul.checks li b { color: var(--amber); }
+
+/* ---- 比較表 ---- */
+.tablewrap { overflow-x: auto; margin-top: 20px; }
+table.cmp { border-collapse: collapse; width: 100%; min-width: 620px; font-size: 13px; }
+table.cmp th, table.cmp td { border: 1px solid var(--line); padding: 9px 13px; text-align: left; }
+table.cmp thead th { background: var(--bg2); color: var(--amber); font-weight: 700; }
+table.cmp td:first-child { color: var(--dim); }
+table.cmp .y { color: var(--green); }
+table.cmp .n { color: var(--red); }
+table.cmp .m { color: var(--dim); }
+table.cmp .hl { background: rgba(77, 255, 136, .05); }
+
+/* ---- 手順 ---- */
+ol.steps { margin: 14px 0 0 0; padding-left: 0; list-style: none; counter-reset: step; max-width: 48em; }
+ol.steps li {
+  counter-increment: step; position: relative;
+  padding: 0 0 16px 44px;
+}
+ol.steps li::before {
+  content: counter(step, decimal-leading-zero);
+  position: absolute; left: 0; top: 2px;
+  color: var(--amber); font-family: var(--pixel); font-size: 17px;
+}
+ol.steps li::after {
+  content: ""; position: absolute; left: 12px; top: 30px; bottom: 4px;
+  border-left: 1px dashed var(--line);
+}
+ol.steps li:last-child::after { display: none; }
+
+.warnbox {
+  border: 1px solid #5a3d1a; border-left: 4px solid var(--amber);
+  background: rgba(255, 179, 71, .05); border-radius: 4px;
+  padding: 13px 17px; margin: 18px 0; max-width: 48em; font-size: 13px;
+}
+.warnbox b { color: var(--amber); }
+
+/* ---- 構成ツリー ---- */
+pre.tree { color: var(--dim); font-size: 13px; line-height: 1.8; }
+pre.tree .g { color: var(--green); }
+pre.tree .a { color: var(--amber); }
+
+/* ---- フッター ---- */
+footer {
+  border-top: 1px solid var(--line); margin-top: 60px;
+  padding: 36px 0 60px; font-size: 12.5px; color: var(--dim);
+}
+footer .art { color: var(--line); font-size: 11px; line-height: 1.4; margin-bottom: 18px; overflow-x: auto; }
+footer a { color: var(--dim); text-decoration: underline; }
+footer a:hover { color: var(--green); }
