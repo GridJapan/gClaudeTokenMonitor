@@ -18,7 +18,7 @@
 #include <math.h>
 #include "soc/rtc_cntl_reg.h"   // {"flash":1} でダウンロードモードに入るため
 
-static const char *FW_VER = "0.2.12";
+static const char *FW_VER = "0.2.13";
 
 // ---- 画面・色 ------------------------------------------------------------
 static const int W = 128, H = 128;
@@ -413,18 +413,12 @@ static void drawWater()
         int iw = (int)yw, is = (int)ys;
         if (iw < 0) iw = 0; if (iw > H) iw = H;
         if (is < 0) is = 0; if (is > H) is = H;
-        // 奥: 週（紫）を水面から底まで（浅い 26px を明色、以下を深色）
-        if (iw < H) {
-            int deep = iw + 26; if (deep > H) deep = H;
-            content.drawFastVLine(x, iw, deep - iw, C_W_PURP);
-            if (H > deep) content.drawFastVLine(x, deep, H - deep, C_W_PURP_D);
-        }
-        // 手前: 5h（青）を水面から底まで上書き
-        if (is < H) {
-            int deep = is + 26; if (deep > H) deep = H;
-            content.drawFastVLine(x, is, deep - is, C_W_BLUE);
-            if (H > deep) content.drawFastVLine(x, deep, H - deep, C_W_BLUE_D);
-        }
+        // 奥: 週（紫）を水面から底まで単色ベタ塗り。
+        // 深さの陰影（明→暗の段差）はやめる: その境目が偽の水面線になり
+        // 3 層に見えていたため。単色 2 層で Win と同じ見え方にする。
+        if (iw < H) content.drawFastVLine(x, iw, H - iw, C_W_PURP);
+        // 手前: 5h（青）を水面から底まで上書き。
+        if (is < H) content.drawFastVLine(x, is, H - is, C_W_BLUE);
         // 水面線（1px）
         if (iw >= 0 && iw < H) content.drawPixel(x, iw, C_SURF_W);
         if (is >= 0 && is < H) content.drawPixel(x, is, C_SURF_S);
