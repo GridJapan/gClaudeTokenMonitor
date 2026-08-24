@@ -344,8 +344,8 @@ GET https://api.anthropic.com/api/oauth/usage
 
 ## サブモニタ（ATOMS3R）
 
-> **main ブランチのみの機能**。v0.1.x の zip には未収録（v0.2 で提供予定）。
-> 使うには[ソースからビルド](#ビルドと実行)すること。
+> **v0.2.0 以降の zip に収録**（v0.1.x の zip には無い）。zip の `atom-fw\` に
+> デバイス用ファームも同梱しており、書き込み・更新はアプリのメニューから行える。
 
 M5Stack **ATOMS3R**（128x128 IPS・BMI270 IMU・USB CDC）を、机上の表示専用サブモニタとして使える。
 PC の CtmMonitor が 200ms ごとに状態 1 行（NDJSON）を USB へ送り、デバイス側が
