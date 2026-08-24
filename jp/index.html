@@ -48,7 +48,7 @@
       タスクバー常駐 UI と、5 分ごとの公式プラン使用率の記録つき。
     </p>
     <div class="badges">
-      <span class="badge hot">v0.1.1</span>
+      <span class="badge hot">v0.2.0</span>
       <span class="badge">Windows 10/11</span>
       <span class="badge">Go / 依存ゼロ</span>
       <span class="badge">MIT License</span>
@@ -69,14 +69,15 @@
     <p class="secno">WHAT IS THIS</p>
     <h2>ログを読むだけ。API キーも設定も不要。</h2>
     <p>
-      Claude Code は全セッションの応答を <code>~/.claude/projects/**/*.jsonl</code> に書き残している。
+      Claude Code は全セッションの応答を <code>~/.claude/projects/**/*.jsonl</code> に書き出している。
       ctm はそのログを <b>tail（差分読み）</b>して、assistant メッセージの usage を集計する。
       計測対象のセッションには一切触れないので、<b>観測者効果が起きない</b>。
     </p>
     <p>
-      同一メッセージが複数行書かれる Claude Code のログ仕様（実測 1.7 倍の水増し）は
-      <code>message.id + requestId</code> をキーに重複排除。キャッシュ書き込み 5 分 / 1 時間 /
-      読み出しを分けて、それぞれ正しい料金レート（1.25x / 2.0x / 0.1x）で換算する。
+      Claude Code のログは同一メッセージを複数行に重複して書く（実測 1.7 倍の水増し）。
+      ctm は <code>message.id + requestId</code> をキーに重複を排除する。
+      キャッシュの 5 分書き込み / 1 時間書き込み / 読み出しも分けて数え、
+      それぞれ 1.25x / 2.0x / 0.1x のレートで換算する。
     </p>
   </div>
 </section>
@@ -89,7 +90,7 @@
       <div>
         <p>
           レートリミットの実体である <b>5 時間ブロック</b>を自動検出し、
-          進行バー・バーンレート（tok/min）・<b>ブロック終了時点の着地見込み</b>を表示する。
+          プログレスバー・バーンレート（tok/min）・<b>ブロック終了時点の着地見込み</b>を表示する。
           直近 60 分はスパークラインで、どの瞬間に燃えたかが分かる。
         </p>
         <p class="dim">
@@ -108,7 +109,7 @@
     <h2>水槽が満ちたら、休憩の合図。</h2>
     <p>
       <b>CtmMonitor</b> はタスクバーに常駐する小さな窓。5 時間制限（手前・青）と週間制限（奥・紫）を
-      2 層の水槽として描き、消費が発生するたびに <b>+N フロート</b>が発生源のプロジェクト名を添えて浮かぶ。
+      2 層の水槽として描く。消費が発生するたびに、発生元のプロジェクト名を添えた <b>+N フロート</b>が浮かび上がる。
       ドラッグすると水面が揺れる物理演出つき。
     </p>
     <div class="aqua-row">
@@ -125,7 +126,7 @@
     <p class="secno">DEMO 03 — VIEWS</p>
     <h2>6 つの切り口。キー 1 つで切替。</h2>
     <p>
-      日別・モデル別・プロジェクト別・セッション別・5h ブロック別。
+      ライブ・日別・モデル別・プロジェクト別・セッション別・5h ブロック別。
       「昨日いくら使ったか」「どのプロジェクトが食っているか」「いま動いているセッションはどれか」が
       即答できる。
     </p>
@@ -171,7 +172,7 @@
         </div>
         <p class="dim">
           再起動してもバイトオフセットから再開（取りこぼし・二重記録なし）。
-          UI の「過去ログ」からは日別明細と<b>指示（プロンプト）ごとの内訳</b>も追える。
+          UI の「過去ログ」からは、日別明細と<b>プロンプトごとの内訳</b>も追える。
         </p>
       </div>
     </div>
@@ -181,11 +182,11 @@
 <section id="limits">
   <div class="wrap">
     <p class="secno">DEMO 05 — PLAN LIMITS</p>
-    <h2>公式の使用率と、実測の消費を同じ行に。</h2>
+    <h2>公式使用率と、実測の消費を同じ行に。</h2>
     <p>
-      Claude Code が画面に出す「5 時間制限 / 週間制限」の<b>公式な使用率（%）</b>を
+      Claude Code が画面に出す「5 時間制限 / 週間制限」の<b>公式使用率（%）</b>を
       Anthropic の API から取得し、同じ時間窓で ctm が実測した消費と並べて記録する。
-      「何 % のとき、いくら分を消費していたか」が残るので、<b>窓の容量を逆算</b>できる。
+      「何 % のとき、いくら消費していたか」が残るので、<b>窓の容量を逆算</b>できる。
     </p>
     <div class="term">
       <div class="bar"><span class="dots">●●●</span> ctm limits</div>
@@ -218,7 +219,7 @@
     <p class="secno">FEATURES</p>
     <h2>機能一覧</h2>
     <ul class="checks">
-      <li><b>重複排除</b> — message.id + requestId で水増しを除去（これをやらないと約 2 倍の過大計上）</li>
+      <li><b>重複排除</b> — message.id + requestId で水増しを除去（未処理だと約 1.7 倍の過大計上）</li>
       <li><b>差分読み</b> — バイトオフセット保持。書きかけ行は次回へ持ち越し</li>
       <li><b>キャッシュ内訳</b> — 5m / 1h 書き込みと読み出しを別レートで課金換算</li>
       <li><b>5h ブロック検出</b> — レートリミット窓の自動区切りと履歴</li>
@@ -230,7 +231,7 @@
       <li><b>JSON 出力</b> — 純 ASCII でスクリプト連携（PowerShell / jq）</li>
       <li><b>クラッシュ自動復旧</b> — UI がレコーダーを監視し証跡を残して再起動</li>
       <li><b>二重起動拒否</b> — ハートビート付きロックで多重記録を防止</li>
-      <li class="todo"><b>ATOMS3R サブモニタ</b> — 机上の USB 小型ディスプレイ（v0.2 で提供予定）</li>
+      <li><b>ATOMS3R サブモニタ</b> — 机上の USB 小型ディスプレイ（v0.2.0 で収録。書き込みもメニューから）</li>
     </ul>
   </div>
 </section>
@@ -254,7 +255,7 @@
         </tbody>
       </table>
     </div>
-    <p class="note" style="margin-top:10px">表示コストはリスト価格ベースの推定値。定額プラン（Pro / Max）では実請求は発生しない。</p>
+    <p class="note" style="margin-top:10px">コスト表示は Anthropic 公開リスト価格に基づく推定値。定額プラン（Pro / Max）では実際の請求は発生しない。</p>
   </div>
 </section>
 
@@ -263,8 +264,8 @@
     <p class="secno">INSTALL</p>
     <h2>インストール（zip 展開だけ）</h2>
     <p>
-      前提は 2 つ: その PC で <b>Claude Code を使っている</b>こと。
-      プラン使用率（%）も見たい場合は <code>claude</code> に<b>ログイン済み</b>であること。
+      必要なのは、その PC で <b>Claude Code を使っている</b>こと。
+      プラン使用率（%）も見るなら、<code>claude</code> に<b>ログイン済み</b>であること。
       Go / .NET / Python のインストールは不要。
     </p>
     <ol class="steps">
@@ -273,9 +274,10 @@
       <li>直下の <b>CtmMonitor.exe</b> をダブルクリック → レコーダー（bin\ctm.exe）も自動で起動</li>
       <li>常用するなら右クリック →「<b>Windows 起動時に開始</b>」</li>
     </ol>
-    <pre class="tree">ctm-0.1.1-windows-amd64.zip
+    <pre class="tree">ctm-0.2.0-windows-amd64.zip
 ├── <span class="g">CtmMonitor.exe</span>   <span class="a">← これをダブルクリック</span>
 ├── bin\ctm.exe      CLI / レコーダー（自動起動される）
+├── <span class="g">atom-fw\</span>          ATOMS3R 用ファーム（メニューから書き込む）
 ├── README.md / INSTALL.txt / LICENSE</pre>
     <div class="term">
       <div class="bar"><span class="dots">●●●</span> 動作確認 <button class="copybtn">copy</button></div>
@@ -286,8 +288,8 @@
     </div>
     <div class="warnbox">
       <b>SmartScreen に止められたら</b>: exe を右クリック → プロパティ →「許可する」→ OK。<br>
-      <b>Smart App Control が有効な PC</b> では、ダウンロードした未署名 exe は解除不能でブロックされる
-      （v0.1.1 からはブロックされたことがバルーンと crash.log で分かる）。その場合は下のソースビルドで。
+      <b>Smart App Control が有効な PC</b> では、ダウンロードした未署名 exe は解除できずブロックされる
+      （ブロックされたことはバルーンと crash.log で分かる）。その場合は、下の手順でソースからビルドする。
     </div>
     <h3>ソースからビルドする場合</h3>
     <div class="term">
@@ -304,13 +306,19 @@
 
 <section>
   <div class="wrap">
-    <p class="secno">NEXT</p>
-    <h2>v0.2: 机の上に、専用の計器を。</h2>
+    <p class="secno">SUB-MONITOR</p>
+    <h2>机の上に、専用の計器を。</h2>
     <p>
-      M5Stack <b>ATOMS3R</b>（128×128 IPS・IMU）を表示専用サブモニタにする機能を開発中。
-      PC の CtmMonitor が 200ms ごとに状態を USB へ送り、デバイス側が 2 層の水槽 +
-      スプリングカウンタを 30fps で描く。本体を物理的に回すと、表示が
-      「ボールが転がるように」重力方向へ追従する。main ブランチで動作中、v0.2 の zip に収録予定。
+      M5Stack <b>ATOMS3R</b>（128×128 IPS・IMU）を表示専用のサブモニタとして使える。
+      PC 側の CtmMonitor が 200ms ごとに状態を USB へ送り、デバイス側は 2 層の水槽と
+      スプリングカウンタを 30fps で描画する。本体を物理的に回すと、表示は
+      「ボールが転がるように」重力の向きへゆっくり追従する。
+    </p>
+    <p>
+      デバイスへのファーム書き込み・更新も<b>アプリの右クリックメニューから</b>行える。
+      esptool や Python の導入は不要で、本体のボタン操作も要らない。zip に同梱の
+      ファーム（<code>atom-fw\</code>）を、新品にはそのまま書き込み、接続中のデバイスが
+      古いときだけ「更新」項目が有効になる（勝手に書き換えることはない）。
     </p>
   </div>
 </section>

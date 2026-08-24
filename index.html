@@ -48,7 +48,7 @@
       Ships with a taskbar companion UI and 5-minute sampling of your official plan usage.
     </p>
     <div class="badges">
-      <span class="badge hot">v0.1.1</span>
+      <span class="badge hot">v0.2.0</span>
       <span class="badge">Windows 10/11</span>
       <span class="badge">Go / zero deps</span>
       <span class="badge">MIT License</span>
@@ -229,7 +229,7 @@ plan usage limits  max / default_claude_max_20x
       <li><b>JSON output</b> — pure ASCII, script-friendly (PowerShell / jq)</li>
       <li><b>Crash auto-recovery</b> — the UI supervises the recorder and restarts it with evidence</li>
       <li><b>Double-start protection</b> — heartbeat lock prevents duplicate recording</li>
-      <li class="todo"><b>ATOMS3R sub-monitor</b> — a desk-top USB display (planned for v0.2)</li>
+      <li><b>ATOMS3R sub-monitor</b> — a desk-top USB display (shipped in v0.2.0, flashed from the menu)</li>
     </ul>
   </div>
 </section>
@@ -303,13 +303,20 @@ plan usage limits  max / default_claude_max_20x
 
 <section>
   <div class="wrap">
-    <p class="secno">NEXT</p>
-    <h2>v0.2: a dedicated gauge on your desk.</h2>
+    <p class="secno">SUB-MONITOR</p>
+    <h2>A dedicated gauge on your desk.</h2>
     <p>
-      In development: an M5Stack <b>ATOMS3R</b> (128×128 IPS, IMU) as a display-only sub-monitor.
+      Use an M5Stack <b>ATOMS3R</b> (128×128 IPS, IMU) as a display-only sub-monitor.
       CtmMonitor streams state over USB every 200ms; the device renders the two-layer aquarium
       and spring counters at 30fps. Physically rotate the unit and the display rolls to follow
-      gravity. Working on the main branch today, shipping in the v0.2 zip.
+      gravity.
+    </p>
+    <p>
+      Firmware flashing and updates happen <b>from the app&#39;s right-click menu</b> —
+      no esptool, no Python, no buttons on the device. The zip bundles the firmware
+      (<code>atom-fw\</code>): flash a brand-new unit as-is, and the &quot;update&quot; item only
+      lights up when the connected device is older than the bundled build (it never
+      rewrites anything on its own).
     </p>
   </div>
 </section>
