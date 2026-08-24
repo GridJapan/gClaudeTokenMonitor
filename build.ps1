@@ -19,7 +19,10 @@ go build -ldflags "-s -w" -o "bin\ctm.exe" .
 $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 if (Test-Path $csc) {
     Write-Host "CtmMonitor.exe をビルド中..."
+    # -win32icon: エクスプローラ・タスクバーのピン留め・ジャンプリストが見る exe リソース。
+    # -resource:  実行時にフォームへ渡すマルチサイズ版（高 DPI でもぼやけない）。
     & $csc -nologo -target:winexe -out:"bin\CtmMonitor.exe" -platform:anycpu -optimize+ `
+        -win32icon:"app\icon.ico" -resource:"app\icon.ico",icon.ico `
         -r:System.dll -r:System.Core.dll -r:System.Drawing.dll -r:System.Windows.Forms.dll `
         "app\CtmMonitor.cs"
 } else {

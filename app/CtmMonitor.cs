@@ -1739,10 +1739,17 @@ class CompactForm : Form
     List<Sample> samples = new List<Sample>();
     Store.DayTotal today = new Store.DayTotal();
 
-    Point dragStart;
-    bool dragging;
-    bool moved;
     public Action OnQuit;
+
+    // ドラッグ移動は OS の移動ループ（タイトルバー相当）に委ねる。
+    // 自前の MouseMove 追跡だと、タッチ入力（Surface 等）はジェスチャ認識に
+    // 吸われて連続した移動イベントが来ず、窓が一切動かせない。
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern bool ReleaseCapture();
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern IntPtr SendMessage(IntPtr h, int msg, IntPtr wp, IntPtr lp);
+    const int WM_NCLBUTTONDOWN = 0xA1;
+    const int HTCAPTION = 2;
 
     public CompactForm()
     {
@@ -1754,7 +1761,7 @@ class CompactForm : Form
         ApplySize();                        // 正方形（大 240 / 小 120）
         BackColor = Theme.Bg;
         DoubleBuffered = true;
-        Icon = TrayApp.BuildIcon(Theme.Accent);
+        Icon = TrayApp.AppIcon;
         MinimizeBox = true;
         MaximizeBox = false;
 
@@ -1769,31 +1776,26 @@ class CompactForm : Form
         fx.Tick += FxTick;
         fx.Start();
 
-        // クリックで詳細、ドラッグで移動。両者は移動量で判別する。
+        // クリックで表示切替、ドラッグで移動。押した瞬間に OS の移動ループへ
+        // 委ねる（タイトルバーのドラッグと同じ扱い）ので、マウスでもタッチでも
+        // ペンでも動かせる。ループから戻って位置が変わっていなければクリック。
         MouseDown += delegate (object o, MouseEventArgs e)
         {
             if (e.Button != MouseButtons.Left) return;
-            dragging = true; moved = false;
-            dragStart = e.Location;
-        };
-        MouseMove += delegate (object o, MouseEventArgs e)
-        {
-            if (!dragging) return;
-            int dx = e.X - dragStart.X, dy = e.Y - dragStart.Y;
-            if (!moved && Math.Abs(dx) + Math.Abs(dy) < 4) return;
-            moved = true;
-            Location = new Point(Location.X + dx, Location.Y + dy);
-            Store.WindowPos = Location;
-        };
-        MouseUp += delegate (object o, MouseEventArgs e)
-        {
-            if (moved) Store.SaveSettings();
-            if (e.Button == MouseButtons.Left && dragging && !moved)
+            var before = Location;
+            ReleaseCapture();
+            SendMessage(Handle, WM_NCLBUTTONDOWN, (IntPtr)HTCAPTION, IntPtr.Zero);
+            // ここに戻るのはドラッグ（またはタップ）が終わったあと
+            if (Location == before)
             {
                 Store.ToggleLayout();   // 単位は右クリックの「表示単位」から
                 Invalidate();
             }
-            dragging = false;
+            else
+            {
+                Store.WindowPos = Location;
+                Store.SaveSettings();
+            }
         };
 
         var menu = new ContextMenuStrip();
@@ -3058,6 +3060,7 @@ class DetailForm : Form
     public DetailForm()
     {
         Text = "gClaudeTokenMonitor — 過去ログ";
+        Icon = TrayApp.AppIcon;
         Size = new Size(1000, 640);
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Theme.Bg;
@@ -3727,6 +3730,27 @@ class TrayApp : ApplicationContext
     // Icon.FromHandle の HICON は Dispose では解放されず、30 秒ごとに作ると
     // 既定の GDI 上限 (10000) を数日で食い潰す。色ごとに一度だけ作って使い回す。
     static readonly Dictionary<int, Icon> iconCache = new Dictionary<int, Icon>();
+
+    static Icon appIcon;
+
+    /// <summary>exe に埋め込んだマルチサイズ icon.ico。ウィンドウ（タスクバー）用。
+    /// 高 DPI でも OS が適切なサイズを選べる。無ければ実行時生成にフォールバック。</summary>
+    public static Icon AppIcon
+    {
+        get
+        {
+            if (appIcon != null) return appIcon;
+            try
+            {
+                var s = System.Reflection.Assembly.GetExecutingAssembly()
+                    .GetManifestResourceStream("icon.ico");
+                if (s != null) appIcon = new Icon(s);
+            }
+            catch { }
+            if (appIcon == null) appIcon = BuildIcon(Theme.Accent);
+            return appIcon;
+        }
+    }
 
     public static Icon BuildIcon(Color c)
     {
