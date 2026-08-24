@@ -18,7 +18,7 @@
 #include <math.h>
 #include "soc/rtc_cntl_reg.h"   // {"flash":1} でダウンロードモードに入るため
 
-static const char *FW_VER = "0.2.6";
+static const char *FW_VER = "0.2.7";
 
 // ---- 画面・色 ------------------------------------------------------------
 static const int W = 128, H = 128;
@@ -147,6 +147,8 @@ static bool   primed = false;
 static float  flash = 0;             // バースト直後の金色
 static float  chop = 0;              // 波の荒れ
 static float  m2 = 0, m2v = 0;       // 中央がぼよんと跳ねる対称モード
+static float  shakeGlow = 0;         // 振りの激しさ（0..1、UI の演出強度に使える）
+static float  prevAx = 0, prevAy = 0;// 加速度の前フレーム値（ジャーク＝急な振りの検出）
 static double waterPhase = 0;
 static int    glintFor = 0;
 static char   curPer[8] = "5H";
@@ -292,12 +294,38 @@ static void updateOrientation()
     float ax, ay, az;
     M5.Imu.getAccel(&ax, &ay, &az);
 
+    // ---- 振りの激しさ → 水を荒らす -------------------------------------------
+    // ジャイロ（角速度）＝どれだけ勢いよく回している/振っているかの直接量。
+    // これと横加速度のジャーク（急な向き変え）を水面の外力にする。激しく振るほど
+    // 波が高く・荒くなり、手を止めれば既存の減衰でスッと凪ぐ。
+    float gx = 0, gy = 0, gz = 0;
+    bool haveG = M5.Imu.getGyro(&gx, &gy, &gz);   // deg/s
+    float shake = 0;
+    if (haveG) {
+        float gmag = sqrtf(gx * gx + gy * gy + gz * gz);
+        shake = gmag - 25.0f;                     // 静止・微動（ノイズ）は無視
+        if (shake < 0) shake = 0;
+        // 激しさに比例して波を荒らす（上限まで一気に寄せる）
+        chop = fminf(3.2f, chop + shake * 0.0011f);
+        // 面内のヨー成分で水を左右に煽る（振った向きへ寄る）
+        m2v += gz * 0.0016f;
+    }
+    // 急な振り（加速度の跳ね）は横叩きとして m2 へ。ジャイロが無くても効く保険。
+    float jx = ax - prevAx;
+    m2v += jx * 0.9f;
+    prevAx = ax; prevAy = ay;
+    if (m2v > 3.5f) m2v = 3.5f; else if (m2v < -3.5f) m2v = -3.5f;   // 暴走防止
+    // 演出強度（0..1）。激しいほど 1 へ。ゆっくり減衰。
+    float target01 = fminf(1.0f, shake / 350.0f + fabsf(jx) * 0.8f);
+    if (target01 > shakeGlow) shakeGlow = target01;
+    else shakeGlow *= 0.90f;
+
     if (dbgImu) {
         static uint32_t last = 0;
         if (millis() - last > 1000) {
             last = millis();
-            Serial.printf("{\"acc\":[%.2f,%.2f,%.2f],\"target\":%d,\"ang\":%.1f}\n",
-                          ax, ay, az, targetAng, ang);
+            Serial.printf("{\"acc\":[%.2f,%.2f,%.2f],\"gyro\":[%.1f,%.1f,%.1f],\"shake\":%.0f,\"target\":%d,\"ang\":%.1f}\n",
+                          ax, ay, az, gx, gy, gz, shake, targetAng, ang);
         }
     }
 
@@ -611,8 +639,10 @@ void loop()
     if (flash > 0.01f) flash *= 0.90f; else flash = 0.0f;
     m2v = m2v * 0.925f - m2 * 0.095f;
     m2 += m2v;
-    if (m2 > 9.0f) { m2 = 9.0f; m2v *= -0.35f; }
-    if (m2 < -9.0f) { m2 = -9.0f; m2v *= -0.35f; }
+    // 通常は ±9 だが、激しく振っている間は壁を広げて大きくうねらせる
+    float wall = 9.0f + shakeGlow * 7.0f;
+    if (m2 > wall)  { m2 = wall;  m2v *= -0.35f; }
+    if (m2 < -wall) { m2 = -wall; m2v *= -0.35f; }
     chop *= 0.95f;
     if (glintFor > 0) glintFor--;
     waterPhase += 0.05 + chop * 0.25;

@@ -1125,6 +1125,9 @@ static class SubMon
         double f5, double fw, double cost, bool rec)
     {
         if (!Store.AtomEnabled) { Shutdown(); return; }
+        // 書き込み・更新・USB リセット中は、勝手に再接続してポートを掴まない
+        // （掴むと ROM 書き込み側が Open できず「書き込みモードに入れず」になる）。
+        if (flashing || updating || resetting) return;
         FileStream s;
         lock (gate) s = stream;
         if (s == null)
