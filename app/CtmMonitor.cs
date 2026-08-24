@@ -18,6 +18,17 @@ using System.Text;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
+// csc はこの属性から Win32 バージョンリソースを合成する。タスクバーや
+// タスクマネージャに出る表示名は AssemblyTitle (= FileDescription)。
+// 無いと exe ファイル名「CtmMonitor」がそのまま表示されてしまう。
+[assembly: System.Reflection.AssemblyTitle("Claude Token Monitor")]
+[assembly: System.Reflection.AssemblyProduct("gClaudeTokenMonitor")]
+[assembly: System.Reflection.AssemblyDescription("Claude Code token usage monitor")]
+[assembly: System.Reflection.AssemblyCompany("GridJapan")]
+[assembly: System.Reflection.AssemblyCopyright("Copyright (c) 2026 GridJapan")]
+[assembly: System.Reflection.AssemblyVersion("0.2.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.2.0.0")]
+
 static class Theme
 {
     public static readonly Color Bg = Color.FromArgb(24, 23, 28);
@@ -879,6 +890,7 @@ class CompactForm : Form
         DoubleBuffered = true;
         Icon = TrayApp.BuildIcon(Theme.Accent);
         MinimizeBox = true;
+        MaximizeBox = false;
 
         timer.Interval = 200;    // アーカイブ側も 200ms 周期。増分読みなので負荷は Stat 1 回分
         timer.Tick += delegate { Reload(); };
@@ -1079,10 +1091,36 @@ class CompactForm : Form
         }
     }
 
+    Size IntendedSize
+    {
+        get { return new Size((int)(LW * Store.WinScale), (int)(LH * Store.WinScale)); }
+    }
+
     public void ApplySize()
     {
-        Size = new Size((int)(LW * Store.WinScale), (int)(LH * Store.WinScale));
+        Size = IntendedSize;
         Invalidate();
+    }
+
+    // この窓は論理 240x240 の固定レイアウトで、他のサイズに意味がない。
+    // タブレットモードの自動最大化や FancyZones 等は、最大化ボタンが無くても
+    // SetWindowPos で強制リサイズしてくる（実機で全画面の黒窓になった）。
+    // 外から何が来てもサイズを取り戻す。
+    protected override void SetBoundsCore(int x, int y, int width, int height, BoundsSpecified specified)
+    {
+        if (WindowState == FormWindowState.Normal)
+        {
+            var s = IntendedSize;
+            width = s.Width; height = s.Height;
+        }
+        base.SetBoundsCore(x, y, width, height, specified);
+    }
+
+    protected override void OnSizeChanged(EventArgs e)
+    {
+        if (WindowState == FormWindowState.Maximized) WindowState = FormWindowState.Normal;
+        if (WindowState == FormWindowState.Normal && Size != IntendedSize) Size = IntendedSize;
+        base.OnSizeChanged(e);
     }
 
     // ---- Big レイアウトの演出状態 --------------------------------------
