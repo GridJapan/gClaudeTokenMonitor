@@ -21,10 +21,13 @@ if (Test-Path $csc) {
     Write-Host "CtmMonitor.exe をビルド中..."
     # -win32icon: エクスプローラ・タスクバーのピン留め・ジャンプリストが見る exe リソース。
     # -resource:  実行時にフォームへ渡すマルチサイズ版（高 DPI でもぼやけない）。
+    # 注意: -resource の引数はカンマを含むため全体を 1 つの文字列で渡す
+    # （裸で書くと PowerShell がカンマで配列に割って csc が失敗する）
     & $csc -nologo -target:winexe -out:"bin\CtmMonitor.exe" -platform:anycpu -optimize+ `
-        -win32icon:"app\icon.ico" -resource:"app\icon.ico",icon.ico `
+        "-win32icon:app\icon.ico" "-resource:app\icon.ico,icon.ico" `
         -r:System.dll -r:System.Core.dll -r:System.Drawing.dll -r:System.Windows.Forms.dll `
         "app\CtmMonitor.cs"
+    if ($LASTEXITCODE -ne 0) { throw "csc が失敗した (exit $LASTEXITCODE)" }
 } else {
     Write-Warning "csc.exe が見つからないため CtmMonitor.exe はスキップ"
 }

@@ -26,8 +26,8 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyDescription("Claude Code token usage monitor")]
 [assembly: System.Reflection.AssemblyCompany("GridJapan")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright (c) 2026 GridJapan")]
-[assembly: System.Reflection.AssemblyVersion("0.2.2.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.2.2.0")]
+[assembly: System.Reflection.AssemblyVersion("0.2.3.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.2.3.0")]
 
 static class Theme
 {
