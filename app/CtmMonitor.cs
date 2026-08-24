@@ -1068,6 +1068,12 @@ static class SubMon
     static extern bool SetCommTimeouts(
         Microsoft.Win32.SafeHandles.SafeFileHandle h, ref CommTimeouts t);
 
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool EscapeCommFunction(
+        Microsoft.Win32.SafeHandles.SafeFileHandle h, uint fn);
+
+    const uint SETRTS = 3, CLRRTS = 4, SETDTR = 5, CLRDTR = 6;
+
     static FileStream stream;                 // 接続中のポート（null = 未接続）
     static readonly object gate = new object();
     static volatile bool connecting;
@@ -1209,20 +1215,28 @@ static class SubMon
         return CreateFile("\\\\.\\" + name, 0xC0000000, 0, IntPtr.Zero, 3, 0, IntPtr.Zero);
     }
 
-    /// <summary>2 段階 open + ping/hello 検証。成功なら開いたままの stream を返す。</summary>
-    static FileStream Handshake(string name)
+    /// <summary>ping を送って hello を待つ。resetFirst=true のときだけ 2 段階 open で
+    /// デバイスを再起動させてから試す。成功なら開いたままの stream を返す。</summary>
+    static FileStream TryPing(string name, bool resetFirst)
     {
         try
         {
-            using (var h1 = OpenPort(name))
+            if (resetFirst)
             {
-                if (h1.IsInvalid) return null;
-                System.Threading.Thread.Sleep(100);
-            }   // close でリセットが走り、デバイスは再起動する
-            System.Threading.Thread.Sleep(3000);
+                using (var h1 = OpenPort(name))
+                {
+                    if (h1.IsInvalid) return null;
+                    System.Threading.Thread.Sleep(100);
+                }   // close でリセットが走り、デバイスは再起動する
+                System.Threading.Thread.Sleep(2200);   // 起動待ち
+            }
 
             var h = OpenPort(name);
             if (h.IsInvalid) return null;
+            // 走行状態の制御線に固定してリセットを避ける（RTS=0=EN High, DTR=0）。
+            // これで「既にアプリで走っているデバイス」を再起動せずに ping できる。
+            EscapeCommFunction(h, CLRRTS);
+            EscapeCommFunction(h, CLRDTR);
             var to = new CommTimeouts { RI = 50, RM = 0, RC = 300, WM = 0, WC = 300 };
             SetCommTimeouts(h, ref to);
             var fs = new FileStream(h, FileAccess.ReadWrite, 256, false);
@@ -1234,14 +1248,15 @@ static class SubMon
                 var buf = new byte[512];
                 var sb = new StringBuilder();
                 int t0 = Environment.TickCount;
-                while (Environment.TickCount - t0 < 2500)
+                int budget = resetFirst ? 2500 : 1500;   // やさしい試行は短く切る
+                while (Environment.TickCount - t0 < budget)
                 {
                     int n = fs.Read(buf, 0, buf.Length);   // COMMTIMEOUTS で 300ms 上限
                     if (n <= 0) continue;
                     sb.Append(Encoding.ASCII.GetString(buf, 0, n));
                     if (sb.ToString().Contains("ctm-atom"))
                     {
-                        // hello の "fw":"x.y.z" を控える（自動更新の判定に使う）
+                        // hello の "fw":"x.y.z" を控える（更新可否の判定に使う）
                         var t = sb.ToString();
                         int i = t.IndexOf("\"fw\":\"", StringComparison.Ordinal);
                         if (i >= 0)
@@ -1261,6 +1276,16 @@ static class SubMon
         }
         catch { }
         return null;
+    }
+
+    /// <summary>接続を確立する。まずリセットせずに ping（既に走っているデバイスは
+    /// 再起動させない＝画面が保たれ、頻繁な挿し直しにも強い）。応答が無ければ
+    /// 2 段階リセットで起こしてから再試行（初回接続・ハング復帰用）。</summary>
+    static FileStream Handshake(string name)
+    {
+        var fs = TryPing(name, false);   // やさしい接続（無リセット）
+        if (fs != null) return fs;
+        return TryPing(name, true);      // だめならリセットして起こす
     }
 
     static void Discover()
@@ -1287,6 +1312,79 @@ static class SubMon
             Status = "未接続";
         }
         finally { connecting = false; }
+    }
+
+    static volatile bool resetting;
+
+    /// <summary>ATOM が Windows から見えなくなった（USB スタックのウェッジ）ときの復旧。
+    /// VID_303A の登録（present / ghost）を pnputil で削除し、USB を再スキャンさせる。
+    /// これで次の接続時にドライバが入れ直され、ポートが正常に列挙し直される。
+    /// pnputil は管理者権限が要るので、昇格した powershell を 1 つ起動する（UAC が出る）。
+    /// 触るのは VID_303A（ATOM）だけ。他社デバイスには一切触れない。</summary>
+    public static void ResetConnection()
+    {
+        if (resetting) return;
+        resetting = true;
+        try
+        {
+            Shutdown();   // 自分のハンドルを手放してから
+
+            try { Directory.CreateDirectory(Store.Root); } catch { }
+            string logPath = Path.Combine(Store.Root, "atom-reset.log");
+            string scriptPath = Path.Combine(Store.Root, "atom-reset.ps1");
+
+            // 昇格側で実行するスクリプト。-Command のインライン埋め込みはクォートが
+            // 競合して壊れるため、必ず .ps1 に書き出して -File で渡す。
+            // VID_303A（ATOM）だけを全削除 → USB 再スキャン → 結果をログへ。
+            var sb = new StringBuilder();
+            sb.AppendLine("$log = '" + logPath.Replace("'", "''") + "'");
+            sb.AppendLine("\"=== atom usb reset $(Get-Date -Format o) ===\" | Set-Content $log");
+            sb.AppendLine("$ds = Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like '*VID_303A*' }");
+            sb.AppendLine("foreach ($d in $ds) {");
+            sb.AppendLine("  \"remove: $($d.InstanceId)\" | Add-Content $log");
+            sb.AppendLine("  & pnputil /remove-device $d.InstanceId *>&1 | Add-Content $log");
+            sb.AppendLine("}");
+            sb.AppendLine("& pnputil /scan-devices *>&1 | Add-Content $log");
+            sb.AppendLine("$rest = Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like '*VID_303A*' }");
+            sb.AppendLine("if ($rest) { \"残: $($rest.Count)\" | Add-Content $log } else { 'clean' | Add-Content $log }");
+            File.WriteAllText(scriptPath, sb.ToString(), new UTF8Encoding(false));
+
+            var psi = new ProcessStartInfo("powershell.exe",
+                "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + scriptPath + "\"")
+            {
+                UseShellExecute = true,   // Verb=runas には ShellExecute が必要
+                Verb = "runas",           // ここで UAC が出る
+                WindowStyle = ProcessWindowStyle.Hidden,
+            };
+            try
+            {
+                var p = Process.Start(psi);
+                Store.LogCrash("atom: USB リセットを昇格実行（UAC 承認済み）");
+                Notify("ATOM 接続リセット",
+                    "USB 登録を削除して再スキャンしました。ATOM を挿し直すと、" +
+                    "ドライバが入れ直されて認識し直されます。", false);
+                if (p != null) { p.WaitForExit(20000); }
+            }
+            catch (System.ComponentModel.Win32Exception wex)
+            {
+                // 1223 = ユーザーが UAC をキャンセル
+                if (wex.NativeErrorCode == 1223)
+                {
+                    Store.LogCrash("atom: USB リセットは UAC で中止された");
+                    Notify("ATOM 接続リセット", "管理者の許可（UAC）がキャンセルされました。", true);
+                }
+                else
+                {
+                    Store.LogCrash("atom: USB リセット失敗 " + wex.Message);
+                    Notify("ATOM 接続リセット", "失敗しました: " + wex.Message, true);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Store.LogCrash("atom: USB リセット例外 " + ex.Message);
+        }
+        finally { resetting = false; }
     }
 
     static volatile bool updating;
@@ -1704,6 +1802,20 @@ class CompactForm : Form
             if (r == DialogResult.OK) SubMon.FlashManual();
         };
         menu.Items.Add(atomFlash);
+        // ATOM が Windows から見えなくなった（USB ウェッジ）ときの復旧。管理者権限が要る。
+        var atomReset = new ToolStripMenuItem("ATOM の接続をリセット（認識しない時）");
+        atomReset.Click += delegate
+        {
+            var r = MessageBox.Show(
+                "ATOM が反応しない・ポートが出ないときに使います。\n\n" +
+                "USB の登録をいったん削除し、ドライバを入れ直させます" +
+                "（管理者の許可＝UAC が出ます）。\n" +
+                "実行したら、ATOM をいったん抜いて挿し直してください。\n\n" +
+                "実行しますか？",
+                "gClaudeTokenMonitor", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
+            if (r == DialogResult.OK) SubMon.ResetConnection();
+        };
+        menu.Items.Add(atomReset);
         menu.Opening += delegate
         {
             atomItem.Text = "サブモニタ (ATOM)  ―  " + SubMon.Status;
