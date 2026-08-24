@@ -88,12 +88,15 @@ func AppendSamples(dir string, samples []LimitSample, now time.Time) error {
 
 // PollLimits fetches once and archives the result.
 func PollLimits(dir string) ([]LimitSample, error) {
-	u, err := FetchUsage()
+	u, acct, err := FetchUsage(dir)
 	if err != nil {
 		return nil, err
 	}
 	now := time.Now()
 	s := BuildSamples(dir, u, now)
+	for i := range s {
+		s[i].Acct = acct
+	}
 	if err := AppendSamples(dir, s, now); err != nil {
 		return s, err
 	}
@@ -106,9 +109,14 @@ func ShowLimits(dir string) error {
 	if err != nil {
 		return err
 	}
-	c, _ := loadCreds()
-	fmt.Printf("%sプラン使用制限%s  %s / %s\n", cBold+cWhite, cReset,
-		c.ClaudeAiOauth.SubscriptionType, c.ClaudeAiOauth.RateLimitTier)
+	if sel := readSelection(dir); sel != "auto" {
+		m, _ := loadAccount(dir, sel)
+		fmt.Printf("%sプラン使用制限%s  %s（選択中のアカウント）\n", cBold+cWhite, cReset, m.Label)
+	} else {
+		c, _ := loadCreds()
+		fmt.Printf("%sプラン使用制限%s  %s / %s\n", cBold+cWhite, cReset,
+			c.ClaudeAiOauth.SubscriptionType, c.ClaudeAiOauth.RateLimitTier)
+	}
 
 	for _, s := range samples {
 		mark := " "

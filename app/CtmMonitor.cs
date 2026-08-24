@@ -90,8 +90,74 @@ static class Store
         }
     }
 
+    /// <summary>Claude Code の構成ディレクトリ（CLAUDE_CONFIG_DIR を尊重）。</summary>
+    public static string ClaudeDir
+    {
+        get
+        {
+            var v = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
+            if (!string.IsNullOrEmpty(v)) return v;
+            return Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
+        }
+    }
+
+    static int envState = -1;
+    static DateTime envAt;
+
+    /// <summary>Claude Code (CLI) の導入状態。0=OK / 1=projects が無い（CLI 未導入。
+    /// Claude デスクトップアプリだけの PC など）/ 2=projects はあるが credentials が
+    /// 無い（未ログイン＝使用率だけ取れない）。窓の警告表示用。10 秒キャッシュ。</summary>
+    public static int EnvState
+    {
+        get
+        {
+            if (envState >= 0 && (DateTime.Now - envAt).TotalSeconds < 10) return envState;
+            envAt = DateTime.Now;
+            try
+            {
+                if (!Directory.Exists(Path.Combine(ClaudeDir, "projects"))) envState = 1;
+                else if (!File.Exists(Path.Combine(ClaudeDir, ".credentials.json"))) envState = 2;
+                else envState = 0;
+            }
+            catch { envState = 0; }
+            return envState;
+        }
+    }
+
+    static string acctBadge;
+    static DateTime acctBadgeAt;
+
+    /// <summary>明示選択中の使用率アカウントの表示名（auto のときは ""）。
+    /// コンパクト窓のヘッダに出す。10 秒キャッシュ。</summary>
+    public static string AcctBadge
+    {
+        get
+        {
+            if (acctBadge != null && (DateTime.Now - acctBadgeAt).TotalSeconds < 10)
+                return acctBadge;
+            acctBadgeAt = DateTime.Now;
+            acctBadge = "";
+            try
+            {
+                var sel = Str(ReadAllTextShared(Path.Combine(Root, "account.json")), "selected");
+                if (sel.Length > 0 && sel != "auto")
+                {
+                    var l = Str(ReadAllTextShared(
+                        Path.Combine(Root, "accounts", sel + ".json")), "label");
+                    acctBadge = l.Length > 24 ? l.Substring(0, 23) + "…" : l;
+                }
+            }
+            catch { }
+            return acctBadge;
+        }
+    }
+
+    /// <summary>アカウント切替直後にキャッシュを捨てて即反映させる。</summary>
+    public static void PokeAcctBadge() { acctBadgeAt = DateTime.MinValue; }
+
     // 依存を増やさないための最小 JSON 読み取り。ctm の出力は純 ASCII の 1 行 1 レコード。
-    static string Str(string line, string key)
+    public static string Str(string line, string key)
     {
         string k = "\"" + key + "\":\"";
         int i = line.IndexOf(k, StringComparison.Ordinal);
@@ -1800,6 +1866,72 @@ class CompactForm : Form
         }
         menu.Items.Add(perMenu);
 
+        // 使用率アカウント: 複数アカウント運用（個人 MAX / 会社 Teams など）の
+        // 取得元切替。ctm が控えた ~/.ctm/accounts/*.json から、開くたびに作り直す。
+        var acctMenu = new ToolStripMenuItem("使用率アカウント");
+        Action<string, string> acctSwitch = delegate (string key, string label)
+        {
+            try
+            {
+                File.WriteAllText(Path.Combine(Store.Root, "account.json"),
+                    "{\"selected\":\"" + key + "\"}");
+            }
+            catch (Exception ex) { Store.LogCrash("acct: 切替失敗 " + ex.Message); return; }
+            Store.LogCrash("acct: " + key + " へ切替");
+            Store.PokeAcctBadge();
+            Invalidate();
+            SubMon.Notify("使用率アカウント", label + " に切り替えました。取得中…", false);
+            try
+            {
+                // ctm limits は取得と記録への追記までやる → 窓は数秒で新しい数字になる
+                var psi = new ProcessStartInfo(Store.CtmExe, "limits");
+                psi.CreateNoWindow = true;
+                psi.UseShellExecute = false;
+                psi.WindowStyle = ProcessWindowStyle.Hidden;
+                Process.Start(psi);
+            }
+            catch (Exception ex) { Store.LogCrash("acct: limits 起動失敗 " + ex.Message); }
+        };
+        Action acctRebuild = delegate
+        {
+            acctMenu.DropDownItems.Clear();
+            string sel = Store.Str(Store.ReadAllTextShared(
+                Path.Combine(Store.Root, "account.json")), "selected");
+            if (sel.Length == 0) sel = "auto";
+            var auto = new ToolStripMenuItem("自動（Claude Code のログインに追従）");
+            auto.Checked = sel == "auto";
+            auto.Click += delegate { acctSwitch("auto", "自動"); };
+            acctMenu.DropDownItems.Add(auto);
+            int n = 0;
+            try
+            {
+                string ad = Path.Combine(Store.Root, "accounts");
+                if (Directory.Exists(ad))
+                    foreach (var f in Directory.GetFiles(ad, "*.json"))
+                    {
+                        var txt = Store.ReadAllTextShared(f);
+                        string key = Store.Str(txt, "key");
+                        if (key.Length == 0) continue;
+                        string label = Store.Str(txt, "label");
+                        if (label.Length == 0) label = key;
+                        var it = new ToolStripMenuItem(label);
+                        it.Checked = sel == key;
+                        string k2 = key, l2 = label;
+                        it.Click += delegate { acctSwitch(k2, l2); };
+                        acctMenu.DropDownItems.Add(it);
+                        n++;
+                    }
+            }
+            catch { }
+            if (n < 2)
+            {
+                var hint = new ToolStripMenuItem("別アカウントは claude の /login で一度ログインすると登録される");
+                hint.Enabled = false;
+                acctMenu.DropDownItems.Add(hint);
+            }
+        };
+        menu.Items.Add(acctMenu);
+
         // ATOMS3R サブモニタ（USB 接続の 128x128 表示専用デバイス）
         var atomItem = new ToolStripMenuItem("サブモニタ (ATOM)");
         atomItem.Checked = Store.AtomEnabled;
@@ -1859,6 +1991,7 @@ class CompactForm : Form
         menu.Items.Add(atomReset);
         menu.Opening += delegate
         {
+            acctRebuild();
             atomItem.Text = "サブモニタ (ATOM)  ―  " + SubMon.Status;
             // 常に見せる。更新できるときだけ有効、最新ならグレーアウト
             bool can = SubMon.UpdateAvailable;
@@ -2826,7 +2959,12 @@ class CompactForm : Form
 
         int y = 10;
         using (var b = new SolidBrush(Theme.Mut))
-            g.DrawString("gClaudeTokenMonitor", fSmall, b, 12, y);
+        {
+            // アカウントを明示選択中はアプリ名の代わりにその名前（どの口座の
+            // 数字を見ているか、窓だけで分かるように）
+            var hd = Store.AcctBadge;
+            g.DrawString(hd.Length > 0 ? hd : "gClaudeTokenMonitor", fSmall, b, 12, y);
+        }
         using (var b = new SolidBrush(Theme.Accent))
         {
             var u = Store.UnitName;
@@ -2837,8 +2975,18 @@ class CompactForm : Form
 
         if (samples.Count == 0)
         {
-            using (var b = new SolidBrush(Theme.Mut))
-                g.DrawString("記録待ち…\n(ctm record が\n 使用率を取るまで)", fSmall, b, 12, y + 20);
+            // データが無い理由を名指しで出す。「記録待ち…」だけでは、CLI 未導入の
+            // PC（Claude デスクトップアプリのみ等）で永久に待たせてしまう。
+            int env = Store.EnvState;
+            if (env == 1)
+                using (var b = new SolidBrush(Theme.ForPct(80)))
+                    g.DrawString("Claude Code (CLI) が\nこの PC に見つかりません\n\nインストールして一度使うと\n計測が始まります", fSmall, b, 12, y + 14);
+            else if (env == 2)
+                using (var b = new SolidBrush(Theme.ForPct(80)))
+                    g.DrawString("claude に未ログインのため\n使用率を取得できません\n\nログインすると表示されます", fSmall, b, 12, y + 14);
+            else
+                using (var b = new SolidBrush(Theme.Mut))
+                    g.DrawString("記録待ち…\n(ctm record が\n 使用率を取るまで)", fSmall, b, 12, y + 20);
         }
 
         foreach (var s in samples)

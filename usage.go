@@ -165,12 +165,18 @@ func (e UsageRateLimited) Error() string {
 	return fmt.Sprintf("使用量エンドポイントがレート制限中 (%s 後に再試行)", dur(e.RetryAfter))
 }
 
-// refreshAccessToken uses the stored refresh token to mint a new access token
-// and writes it back to credentials.json, preserving every other field. This
-// is what Claude Code does; without it, an expired accessToken means 401 even
-// though the refreshToken is still good. Returns the new access token.
+// refreshAccessToken refreshes credentials.json (the live Claude Code login).
 func refreshAccessToken() (string, error) {
-	path := credentialsPath()
+	return refreshTokenFile(credentialsPath())
+}
+
+// refreshTokenFile uses the stored refresh token to mint a new access token
+// and writes it back to the same file, preserving every other field. This is
+// what Claude Code does; without it, an expired accessToken means 401 even
+// though the refreshToken is still good. The file just needs a claudeAiOauth
+// block, so it works on credentials.json and on account-vault entries alike.
+// Returns the new access token.
+func refreshTokenFile(path string) (string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
@@ -262,11 +268,24 @@ func refreshAccessToken() (string, error) {
 	return tr.AccessToken, nil
 }
 
-// FetchUsage asks Anthropic for the current plan-limit percentages.
-func FetchUsage() (*UsageResponse, error) {
+// FetchUsage asks Anthropic for the current plan-limit percentages, for the
+// account selected in <root>/account.json ("auto" = the live Claude Code
+// login). It also snapshots whichever login it sees into the vault so both
+// accounts of a multi-account user become selectable. Returns the response
+// and the account label the numbers belong to (best-effort, may be "").
+func FetchUsage(root string) (*UsageResponse, string, error) {
+	sel := "auto"
+	if root != "" {
+		_ = snapshotAccount(root) // 見かけたログインは常に控える（失敗は無視）
+		sel = readSelection(root)
+	}
+	if sel != "auto" {
+		return fetchUsageAccount(root, sel)
+	}
+
 	c, err := loadCreds()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	token := c.ClaudeAiOauth.AccessToken
 	// 失効（60 秒の余裕を見て）していれば先に更新する
@@ -275,16 +294,49 @@ func FetchUsage() (*UsageResponse, error) {
 		if nt, rerr := refreshAccessToken(); rerr == nil {
 			token = nt
 		} else if _, ok := rerr.(UsageRateLimited); ok {
-			return nil, rerr // レート制限中は素直に待つ
+			return nil, "", rerr // レート制限中は素直に待つ
 		}
 		// それ以外の更新失敗は、一応いまのトークンで叩いて 401 経路に任せる
 	}
-	return fetchUsageWith(token, true)
+	label := ""
+	if _, l, _, _, _, ierr := currentIdentity(); ierr == nil {
+		label = l
+	}
+	u, err := fetchUsageWith(token, refreshAccessToken)
+	return u, label, err
 }
 
-// fetchUsageWith calls the usage endpoint with a given token. On 401 with
-// allowRefresh, it refreshes once and retries.
-func fetchUsageWith(token string, allowRefresh bool) (*UsageResponse, error) {
+// fetchUsageAccount serves the vault-selected account: refresh with ITS
+// refresh token (written back to the vault file, never to credentials.json).
+func fetchUsageAccount(root, key string) (*UsageResponse, string, error) {
+	m, err := loadAccount(root, key)
+	if err != nil {
+		return nil, "", fmt.Errorf("選択中のアカウント %s が未登録（claude の /login で一度ログインすると登録される）: %w",
+			shortKey(key), err)
+	}
+	var o struct {
+		AccessToken string `json:"accessToken"`
+		ExpiresAt   int64  `json:"expiresAt"`
+	}
+	if jerr := json.Unmarshal(m.ClaudeAiOauth, &o); jerr != nil || o.AccessToken == "" {
+		return nil, m.Label, fmt.Errorf("%s のトークンが壊れている。claude で一度ログインし直すと登録し直される", m.Label)
+	}
+	p := accountPath(root, key)
+	token := o.AccessToken
+	if o.ExpiresAt > 0 && time.Now().UnixMilli() > o.ExpiresAt-60000 {
+		if nt, rerr := refreshTokenFile(p); rerr == nil {
+			token = nt
+		} else if _, ok := rerr.(UsageRateLimited); ok {
+			return nil, m.Label, rerr
+		}
+	}
+	u, err := fetchUsageWith(token, func() (string, error) { return refreshTokenFile(p) })
+	return u, m.Label, err
+}
+
+// fetchUsageWith calls the usage endpoint with a given token. On 401 with a
+// refresh function, it refreshes once and retries.
+func fetchUsageWith(token string, refresh func() (string, error)) (*UsageResponse, error) {
 	req, err := http.NewRequest(http.MethodGet, usageEndpoint, nil)
 	if err != nil {
 		return nil, err
@@ -314,9 +366,9 @@ func fetchUsageWith(token string, allowRefresh bool) (*UsageResponse, error) {
 		return &u, nil
 	case http.StatusUnauthorized:
 		// 失効トークンでの 401。1 回だけ更新して再試行する
-		if allowRefresh {
-			if nt, rerr := refreshAccessToken(); rerr == nil {
-				return fetchUsageWith(nt, false)
+		if refresh != nil {
+			if nt, rerr := refresh(); rerr == nil {
+				return fetchUsageWith(nt, nil)
 			} else if rl, ok := rerr.(UsageRateLimited); ok {
 				return nil, rl
 			}
@@ -347,6 +399,7 @@ func mini(a, b int) int {
 // same window — "何%のときに、いくら分を消費していたか" in one record.
 type LimitSample struct {
 	TS       string  `json:"ts"`
+	Acct     string  `json:"acct,omitempty"` // どのアカウントの数字か
 	Key      string  `json:"key"`
 	Label    string  `json:"label"`
 	Percent  float64 `json:"percent"`

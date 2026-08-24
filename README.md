@@ -31,8 +31,12 @@ Windows 10/11 標準搭載の .NET Framework で動く。Go / Git / Python が�
 
 前提は 2 つ:
 
-- そのPCで **Claude Code を使っている**こと（`~/.claude/projects/` のログを読んで計測する）
+- そのPCで **Claude Code (CLI) を使っている**こと（`~/.claude/projects/` のログを読んで計測する。
+  Claude **デスクトップアプリだけでは不可**）
 - プラン使用率（%）も見たい場合は、そのPCで `claude` に**ログイン済み**であること
+
+どちらかが欠けている PC では、コンパクト窓にその旨の警告が出る
+（「Claude Code (CLI) が見つかりません」/「未ログインのため使用率を取得できません」）。
 
 手順:
 
@@ -341,6 +345,19 @@ GET https://api.anthropic.com/api/oauth/usage
 .\bin\ctm.exe limits history            # 今日の記録
 .\bin\ctm.exe limits history -day "2026-08-21" -w weekly_all
 ```
+
+### 複数アカウント（個人 MAX と 会社 Teams など）
+
+Claude Code のログインは常に 1 つだが、ctm はログインを見かけるたびにトークン一式を
+`~/.ctm/accounts/` に控える。**それぞれのアカウントで一度 `/login` しておけば**、以後は
+Claude Code 側を切り替え直さなくても、使用率の取得元だけを行き来できる
+（控えたトークンは失効しても ctm が自動更新する）。
+
+- 切替: CtmMonitor 右クリック →「**使用率アカウント**」→ 選ぶ（数秒で窓に反映）。
+  「自動」は従来どおり現在のログインに追従
+- CLI: `ctm limits accounts`（一覧）/ `ctm limits use <key|auto>`（切替）
+- 明示選択中はコンパクト窓のヘッダにアカウント名が出る。記録される各サンプルにも
+  `acct` フィールドが付くので、どの口座の数字かは後からでも区別できる
 
 ## サブモニタ（ATOMS3R）
 

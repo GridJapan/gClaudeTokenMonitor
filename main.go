@@ -73,6 +73,7 @@ func usage(w *os.File) {
   ctm stop                  常駐レコーダーを停止
   ctm query  -from t        アーカイブから期間を切り出して集計
   ctm limits [show|history] プラン使用制限（5時間 / 週次）の使用率と消費
+  ctm limits accounts|use   使用率の取得アカウントを一覧・切替（複数アカウント）
   ctm version
   ctm help
 
@@ -282,8 +283,15 @@ func cmdLimits(args []string) error {
 		return ShowLimits(*archive)
 	case "history":
 		return LimitHistory(*archive, *day, *win)
+	case "accounts":
+		return ShowAccounts(*archive)
+	case "use":
+		if len(fs.Args()) < 1 {
+			return fmt.Errorf("使い方: ctm limits use <アカウント key の先頭 | auto>")
+		}
+		return UseAccount(*archive, fs.Args()[0])
 	default:
-		return fmt.Errorf("不明なサブコマンド: %s（show / history）", sub)
+		return fmt.Errorf("不明なサブコマンド: %s（show / history / accounts / use）", sub)
 	}
 }
 
