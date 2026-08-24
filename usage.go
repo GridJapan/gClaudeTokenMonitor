@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -26,6 +27,11 @@ const (
 	usageEndpoint = "https://api.anthropic.com/api/oauth/usage"
 	usageBeta     = "oauth-2025-04-20"
 	usageScope    = "user:profile" // tokens without this cannot call usage
+
+	// Claude Code の OAuth。accessToken が失効したら refreshToken でこの
+	// エンドポイントから更新する（Claude Code と同じ経路・公開の client_id）。
+	tokenEndpoint = "https://console.anthropic.com/v1/oauth/token"
+	oauthClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 )
 
 type oauthCreds struct {
@@ -159,17 +165,131 @@ func (e UsageRateLimited) Error() string {
 	return fmt.Sprintf("使用量エンドポイントがレート制限中 (%s 後に再試行)", dur(e.RetryAfter))
 }
 
+// refreshAccessToken uses the stored refresh token to mint a new access token
+// and writes it back to credentials.json, preserving every other field. This
+// is what Claude Code does; without it, an expired accessToken means 401 even
+// though the refreshToken is still good. Returns the new access token.
+func refreshAccessToken() (string, error) {
+	path := credentialsPath()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	// 全フィールドを温存するため生の map で読む（未知フィールドも保持）
+	var full map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &full); err != nil {
+		return "", err
+	}
+	oauthRaw, ok := full["claudeAiOauth"]
+	if !ok {
+		return "", fmt.Errorf("claudeAiOauth が無い")
+	}
+	var oauth map[string]json.RawMessage
+	if err := json.Unmarshal(oauthRaw, &oauth); err != nil {
+		return "", err
+	}
+	var refreshTok string
+	json.Unmarshal(oauth["refreshToken"], &refreshTok)
+	if refreshTok == "" {
+		return "", fmt.Errorf("refreshToken が無い。claude で再ログインが必要")
+	}
+
+	reqBody, _ := json.Marshal(map[string]string{
+		"grant_type":    "refresh_token",
+		"refresh_token": refreshTok,
+		"client_id":     oauthClientID,
+	})
+	req, err := http.NewRequest(http.MethodPost, tokenEndpoint, bytes.NewReader(reqBody))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "claude-cli/"+claudeVersion()+" (external, cli)")
+
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+
+	if resp.StatusCode == http.StatusTooManyRequests {
+		d := 5 * time.Minute
+		if ra := resp.Header.Get("Retry-After"); ra != "" {
+			if secs, err := time.ParseDuration(ra + "s"); err == nil {
+				d = secs
+			}
+		}
+		return "", UsageRateLimited{RetryAfter: d}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("トークン更新 HTTP %d: %s", resp.StatusCode,
+			strings.TrimSpace(string(body))[:mini(200, len(strings.TrimSpace(string(body))))])
+	}
+	var tr struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int64  `json:"expires_in"`
+	}
+	if err := json.Unmarshal(body, &tr); err != nil {
+		return "", err
+	}
+	if tr.AccessToken == "" {
+		return "", fmt.Errorf("access_token が空")
+	}
+
+	// credentials.json を更新（accessToken / expiresAt / refreshToken だけ差し替え、
+	// 他は温存）。tmp に書いて rename でアトミックに。
+	oauth["accessToken"], _ = json.Marshal(tr.AccessToken)
+	oauth["expiresAt"], _ = json.Marshal(time.Now().UnixMilli() + tr.ExpiresIn*1000)
+	if tr.RefreshToken != "" {
+		oauth["refreshToken"], _ = json.Marshal(tr.RefreshToken)
+	}
+	full["claudeAiOauth"], _ = json.Marshal(oauth)
+	out, err := json.MarshalIndent(full, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, out, 0600); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return "", err
+	}
+	return tr.AccessToken, nil
+}
+
 // FetchUsage asks Anthropic for the current plan-limit percentages.
 func FetchUsage() (*UsageResponse, error) {
 	c, err := loadCreds()
 	if err != nil {
 		return nil, err
 	}
+	token := c.ClaudeAiOauth.AccessToken
+	// 失効（60 秒の余裕を見て）していれば先に更新する
+	if c.ClaudeAiOauth.ExpiresAt > 0 &&
+		time.Now().UnixMilli() > c.ClaudeAiOauth.ExpiresAt-60000 {
+		if nt, rerr := refreshAccessToken(); rerr == nil {
+			token = nt
+		} else if _, ok := rerr.(UsageRateLimited); ok {
+			return nil, rerr // レート制限中は素直に待つ
+		}
+		// それ以外の更新失敗は、一応いまのトークンで叩いて 401 経路に任せる
+	}
+	return fetchUsageWith(token, true)
+}
+
+// fetchUsageWith calls the usage endpoint with a given token. On 401 with
+// allowRefresh, it refreshes once and retries.
+func fetchUsageWith(token string, allowRefresh bool) (*UsageResponse, error) {
 	req, err := http.NewRequest(http.MethodGet, usageEndpoint, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.ClaudeAiOauth.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-beta", usageBeta)
@@ -193,6 +313,14 @@ func FetchUsage() (*UsageResponse, error) {
 		}
 		return &u, nil
 	case http.StatusUnauthorized:
+		// 失効トークンでの 401。1 回だけ更新して再試行する
+		if allowRefresh {
+			if nt, rerr := refreshAccessToken(); rerr == nil {
+				return fetchUsageWith(nt, false)
+			} else if rl, ok := rerr.(UsageRateLimited); ok {
+				return nil, rl
+			}
+		}
 		return nil, fmt.Errorf("認証エラー (401)。claude で再ログインが必要")
 	case http.StatusTooManyRequests:
 		d := 5 * time.Minute
