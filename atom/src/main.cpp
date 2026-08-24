@@ -18,7 +18,7 @@
 #include <math.h>
 #include "soc/rtc_cntl_reg.h"   // {"flash":1} でダウンロードモードに入るため
 
-static const char *FW_VER = "0.2.8";
+static const char *FW_VER = "0.2.9";
 
 // ---- 画面・色 ------------------------------------------------------------
 static const int W = 128, H = 128;
@@ -321,11 +321,13 @@ static void updateOrientation()
     // 画面横方向の重力成分 gh（+ で画面右が低い）を、今の表示向きから取る。
     // 表示は 0/90/180/270 に自動回転するので、その向きごとに横成分を選ぶ。
     // 90/270 の符号は実機の軸配置で反転し得るので、4 向き回して確認すること。
+    // content-right = content-down を -90°回転 で導いた正しい横成分。
+    // 実機 4 向き検証で 90/270（縦向き）のみ符号が逆だったので反転済み。
     float gh;
     switch (targetAng) {
-        case 90:  gh =  ay; break;
+        case 90:  gh = -ay; break;
         case 180: gh = -ax; break;
-        case 270: gh = -ay; break;
+        case 270: gh =  ay; break;
         default:  gh =  ax; break;   // 0°
     }
     // 低い側で水位が上がる = その側の水面 y を小さく（画面上で高く）する。
