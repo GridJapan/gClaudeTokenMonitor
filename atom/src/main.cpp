@@ -18,7 +18,7 @@
 #include <math.h>
 #include "soc/rtc_cntl_reg.h"   // {"flash":1} でダウンロードモードに入るため
 
-static const char *FW_VER = "0.2.9";
+static const char *FW_VER = "0.2.10";
 
 // ---- 画面・色 ------------------------------------------------------------
 static const int W = 128, H = 128;
@@ -393,7 +393,7 @@ static float surfaceY(float level, float x, float amp, float k, double phase)
     float u = x / (float)W;
     float a = amp * (1.0f + chop * 1.8f);
     return level
-        - tiltPix * (u - 0.5f)                        // 傾き: 低い側で水位が上がる
+        + tiltPix * (u - 0.5f)                        // 傾き: 低い側で水位が上がる（実機で符号確定）
         + m2 * cosf(2.0f * (float)M_PI * u) * 0.5f
         + a * sinf(x * k + (float)phase)
         + a * 0.55f * sinf(x * k * 2.6f - (float)phase * 1.6f);
