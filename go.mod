@@ -1,3 +1,3 @@
-module github.com/GridJapan/gjClaudeTokenMonitor
+module github.com/GridJapan/gClaudeTokenMonitor
 
 go 1.22

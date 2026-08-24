@@ -1,4 +1,4 @@
-gjClaudeTokenMonitor (ctm) — インストール手順（この zip だけで完結）
+gClaudeTokenMonitor (ctm) — インストール手順（この zip だけで完結）
 =====================================================================
 
 追加インストールは不要です。Go / .NET / Python は要りません。
@@ -40,5 +40,5 @@ gjClaudeTokenMonitor (ctm) — インストール手順（この zip だけで�
 使い方・詳細
 ------------
 - 同梱の README.md（機能・コマンド・計測ロジック）
-- リリースページ: https://github.com/GridJapan/gjClaudeTokenMonitor/releases
-- リポジトリ:     https://github.com/GridJapan/gjClaudeTokenMonitor
+- リリースページ: https://github.com/GridJapan/gClaudeTokenMonitor/releases
+- リポジトリ:     https://github.com/GridJapan/gClaudeTokenMonitor

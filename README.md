@@ -1,4 +1,4 @@
-# gjClaudeTokenMonitor (ctm)
+# gClaudeTokenMonitor (ctm)
 
 Claude Code のトークン消費量をリアルタイムで計測するターミナルモニター。
 Go 標準ライブラリのみ・外部依存ゼロ・単一 exe。
@@ -34,7 +34,7 @@ Windows 10/11 標準搭載の .NET Framework で動く。Go / Git / Python が�
 
 手順:
 
-1. [Releases](https://github.com/GridJapan/gjClaudeTokenMonitor/releases) から `ctm-*-windows-amd64.zip` をダウンロード
+1. [Releases](https://github.com/GridJapan/gClaudeTokenMonitor/releases) から `ctm-*-windows-amd64.zip` をダウンロード
 2. 任意のフォルダ（例 `C:\tools\ctm`）に展開（2 つの exe は同じフォルダに置く）
 3. `CtmMonitor.exe` をダブルクリック → レコーダー（ctm.exe）も自動で起動する
 4. 常用するなら右クリック →「**Windows 起動時に開始**」
@@ -64,8 +64,8 @@ winget install Git.Git GoLang.Go
 **新しいターミナル**を開いて:
 
 ```powershell
-git clone https://github.com/GridJapan/gjClaudeTokenMonitor.git
-cd gjClaudeTokenMonitor
+git clone https://github.com/GridJapan/gClaudeTokenMonitor.git
+cd gClaudeTokenMonitor
 .\build.ps1
 ```
 
