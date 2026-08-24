@@ -1105,6 +1105,33 @@ static class SubMon
         }
     }
 
+    /// <summary>直近の探索で「ポートは見えるのに ctm-atom が応答しなかった」ポート名。
+    /// 新品・別ファーム・起動不能のどれか＝手動書き込みの正当な対象。</summary>
+    static volatile string blankPort = "";
+
+    /// <summary>検知済みの書き込み対象ポート名（無ければ ""）。確認ダイアログの表示用。</summary>
+    public static string BlankPort { get { return blankPort; } }
+
+    /// <summary>「ATOM にファームを書き込む」を有効にするか。デバイスは Windows に
+    /// 見えているのに本アプリのファームが応答しない、と探索が検知したときだけ true。
+    /// 接続中（＝アプリ入り。更新は UpdateNow の担当）や未接続時は false。</summary>
+    public static bool FlashTarget
+    {
+        get
+        {
+            if (Connected || flashing || updating || resetting) return false;
+            string p = blankPort;
+            if (p.Length == 0) return false;
+            try
+            {
+                foreach (var n in SerialPort.GetPortNames())
+                    if (n == p) return true;   // 検知した個体がまだ挿さっている
+            }
+            catch { }
+            return false;
+        }
+    }
+
     /// <summary>バルーン通知。TrayApp が UI スレッドへマーシャリングして差し込む。</summary>
     public static Action<string, string, bool> Notify = delegate { };
 
@@ -1296,6 +1323,7 @@ static class SubMon
         try
         {
             var live = new HashSet<string>(SerialPort.GetPortNames());
+            string mute = "";   // 見えているのに応答しなかったポート
             foreach (var name in CandidatePorts())
             {
                 if (!live.Contains(name)) continue;   // 抜かれた後の残骸エントリ
@@ -1305,14 +1333,17 @@ static class SubMon
                     // 接続するだけ。ファーム更新は勝手に行わず、メニューからの
                     // 明示操作 (UpdateNow) でだけ書き込む。
                     lock (gate) { stream = fs; connectedPort = name; }
+                    blankPort = "";
                     Status = "接続中 " + name + (DeviceFw.Length > 0 ? " (fw " + DeviceFw + ")" : "");
                     if (UpdateAvailable)
                         Status += "  ※更新あり v" + AtomFw.Ver;
                     Store.LogCrash("atom: 接続 " + name + " (fw " + DeviceFw + ")");
                     return;
                 }
+                if (mute.Length == 0) mute = name;
             }
-            Status = "未接続";
+            blankPort = mute;
+            Status = mute.Length > 0 ? "応答なし " + mute + "（要書き込み）" : "未接続";
         }
         finally { connecting = false; }
     }
@@ -1536,9 +1567,14 @@ static class SubMon
                 Shutdown();
                 Status = "手動書き込み中…";
                 var live = new HashSet<string>(SerialPort.GetPortNames());
-                string port = null;
+                // 探索が「応答なし」と検知した個体を最優先。無ければ従来どおり
+                // 最初に見つかった VID_303A ポート（復旧などメニュー外の経路用）
+                string port = live.Contains(blankPort) ? blankPort : null;
                 foreach (var name in CandidatePorts())
-                    if (live.Contains(name)) { port = name; break; }
+                {
+                    if (port != null) break;
+                    if (live.Contains(name)) port = name;
+                }
                 if (port == null)
                 {
                     Notify("ATOM 書き込み", "ESP32-S3 (VID_303A) のポートが見つかりません。", true);
@@ -1589,6 +1625,7 @@ static class SubMon
                 Store.LogCrash("atom: 手動フルフラッシュ " + (ok ? "成功" : "失敗"));
                 if (ok)
                 {
+                    blankPort = "";   // もう空ではない。次の探索が接続する
                     FlashEnd(true, "v" + AtomFw.Ver + " を書き込みました");
                     Notify("ATOM 書き込み完了", "v" + AtomFw.Ver + " を書き込みました。数秒で表示が始まります。", false);
                     Status = "再接続待ち";
@@ -1797,10 +1834,11 @@ class CompactForm : Form
                 return;
             }
             var r = MessageBox.Show(
-                "接続中の ESP32-S3 (ATOMS3R) にファーム v" + AtomFw.Ver + " を書き込みます。\n" +
-                "新品や無反応の個体は、本体のリセットボタンを約 2 秒長押しして\n" +
-                "緑 LED（ダウンロードモード）にしてから OK を押してください。\n\n" +
-                "実行しますか？",
+                "検知した ESP32-S3 (ATOMS3R" +
+                (SubMon.BlankPort.Length > 0 ? " / " + SubMon.BlankPort : "") +
+                ") にファーム v" + AtomFw.Ver + " を書き込みます。\n" +
+                "本体のボタン操作は不要です。\n\n" +
+                "書き込み中は USB ケーブルを抜かないでください（数十秒）。\n実行しますか？",
                 "gClaudeTokenMonitor", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
             if (r == DialogResult.OK) SubMon.FlashManual();
         };
@@ -1831,7 +1869,18 @@ class CompactForm : Form
                 atomUpdate.Text = "ATOM ファームを更新  (v" + SubMon.DeviceFw + " = 最新)";
             else
                 atomUpdate.Text = "ATOM ファームを更新";
-            atomFlash.Enabled = AtomFw.Available;
+            // 書き込みは「デバイスは見えるのに本アプリが応答しない」個体を検知した
+            // ときだけ有効（新品・別ファーム・起動不能）。通常はグレーのまま。
+            bool blank = AtomFw.Available && SubMon.FlashTarget;
+            atomFlash.Enabled = blank;
+            if (blank)
+                atomFlash.Text = "ATOM にファームを書き込む";
+            else if (!AtomFw.Available)
+                atomFlash.Text = "ATOM にファームを書き込む（同梱ファームなし）";
+            else if (SubMon.Connected)
+                atomFlash.Text = "ATOM にファームを書き込む（導入済み）";
+            else
+                atomFlash.Text = "ATOM にファームを書き込む（対象なし）";
         };
 
         // Windows 起動時に自動開始（このマシンでの自分の絶対パスで登録するので、
