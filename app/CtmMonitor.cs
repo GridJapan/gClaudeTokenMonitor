@@ -2327,8 +2327,9 @@ class CompactForm : Form
     /// <summary>水槽の背景。5 時間制限の使用率が水位になり、水面が揺れる。</summary>
     float LevelFor(double pct)
     {
+        // 0% = 底（空）、100% = 上端マージン。0% で底に水を残さない。
         float level = (float)(LH * (1.0 - Math.Min(pct, 100) / 100.0));
-        return Math.Max(16, Math.Min(LH - 10, level));
+        return Math.Max(14, level);
     }
 
     /// <summary>手前の水面（5h）。泡・しぶきの基準はこちら。</summary>
@@ -2350,22 +2351,27 @@ class CompactForm : Form
             if (x.Key == "session") ses = x.Percent;
             if (x.Key == "weekly_all") wk = x.Percent;
         }
-        float lvW = LevelFor(wk);
-        float lvS = LevelFor(ses);
+        // ---- 奥: 週（紫）---- ほぼ 0% なら描かない（底に薄く残さない）
+        if (wk >= 0.5)
+        {
+            float lvW = LevelFor(wk);
+            DrawWaveFill(g, lvW, 3.4f, 0.034f, waterPhase * 0.6 + 1.3,
+                Color.FromArgb(70, 150, 115, 235), Color.FromArgb(90, 55, 38, 130));
+            DrawSurfaceLine(g, lvW, 3.4f, 0.034f, waterPhase * 0.6 + 1.3,
+                Color.FromArgb(90, 200, 170, 255));
+        }
 
-        // ---- 奥: 週（紫）----
-        DrawWaveFill(g, lvW, 3.4f, 0.034f, waterPhase * 0.6 + 1.3,
-            Color.FromArgb(70, 150, 115, 235), Color.FromArgb(90, 55, 38, 130));
-        DrawSurfaceLine(g, lvW, 3.4f, 0.034f, waterPhase * 0.6 + 1.3,
-            Color.FromArgb(90, 200, 170, 255));
-
-        // ---- 手前: 5h（青・二重塗りで深さを出す）----
-        DrawWaveFill(g, lvS - 2, 4.0f, 0.040f, waterPhase * 0.7 + 2.1,
-            Color.FromArgb(50, 96, 140, 235), Color.FromArgb(65, 30, 45, 110));
-        DrawWaveFill(g, lvS, 3.2f, 0.045f, waterPhase,
-            Color.FromArgb(95, 96, 155, 245), Color.FromArgb(120, 30, 52, 135));
-        DrawSurfaceLine(g, lvS, 3.2f, 0.045f, waterPhase,
-            Color.FromArgb(130, 170, 210, 255));
+        // ---- 手前: 5h（青・二重塗りで深さを出す）---- ほぼ 0% なら描かない
+        if (ses >= 0.5)
+        {
+            float lvS = LevelFor(ses);
+            DrawWaveFill(g, lvS - 2, 4.0f, 0.040f, waterPhase * 0.7 + 2.1,
+                Color.FromArgb(50, 96, 140, 235), Color.FromArgb(65, 30, 45, 110));
+            DrawWaveFill(g, lvS, 3.2f, 0.045f, waterPhase,
+                Color.FromArgb(95, 96, 155, 245), Color.FromArgb(120, 30, 52, 135));
+            DrawSurfaceLine(g, lvS, 3.2f, 0.045f, waterPhase,
+                Color.FromArgb(130, 170, 210, 255));
+        }
     }
 
     /// <summary>窓の経過割合 0..1。リセット直後 = 0 から始まり、時間が進むほど

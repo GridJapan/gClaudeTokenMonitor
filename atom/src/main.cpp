@@ -18,7 +18,7 @@
 #include <math.h>
 #include "soc/rtc_cntl_reg.h"   // {"flash":1} でダウンロードモードに入るため
 
-static const char *FW_VER = "0.2.10";
+static const char *FW_VER = "0.2.11";
 
 // ---- 画面・色 ------------------------------------------------------------
 static const int W = 128, H = 128;
@@ -382,10 +382,10 @@ static void animateAngle()
 // ---- 水槽 --------------------------------------------------------------------
 static float levelFor(double pct)
 {
-    // 0% = 下端近く、100% = 上端近く
+    // 0% = 完全に底（空）、100% = 上端。0% で底に水を残さない。
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
-    return (float)(H - 10 - (H - 24) * pct / 100.0);
+    return (float)(H - (H - 14) * pct / 100.0);
 }
 
 static float surfaceY(float level, float x, float amp, float k, double phase)
@@ -401,8 +401,10 @@ static float surfaceY(float level, float x, float amp, float k, double phase)
 
 static void drawWater()
 {
-    float lvW = levelFor(rx.pctw);
-    float lvS = levelFor(rx.pct5);
+    // ほぼ 0%（データ無し等）の層は画面外へ逃がして完全に空にする
+    // （波の山が底に薄く残るのも防ぐ）。
+    float lvW = (rx.pctw < 0.5) ? (float)(H + 40) : levelFor(rx.pctw);
+    float lvS = (rx.pct5 < 0.5) ? (float)(H + 40) : levelFor(rx.pct5);
     for (int x = 0; x < W; x++) {
         float yw = surfaceY(lvW, (float)x, 1.7f, 0.065f, waterPhase * 0.6 + 1.3);
         float ys = surfaceY(lvS, (float)x, 1.6f, 0.085f, waterPhase);
