@@ -1,0 +1,44 @@
+gjClaudeTokenMonitor (ctm) — インストール手順（この zip だけで完結）
+=====================================================================
+
+追加インストールは不要です。Go / .NET / Python は要りません。
+（ctm.exe は依存ゼロの単一 exe、CtmMonitor.exe は Windows 10/11
+  標準搭載の .NET Framework で動きます）
+
+前提（2 つだけ）
+----------------
+1. この PC で Claude Code を使っていること
+   （~/.claude/projects/ のログを読んで計測します）
+2. プラン使用率（%）も見たい場合は、この PC で claude にログイン済みであること
+
+手順
+----
+1. この zip を任意のフォルダ（例 C:\tools\ctm）に展開する
+   （ctm.exe と CtmMonitor.exe は同じフォルダに置くこと。
+    zip をダブルクリックで開いた表示のまま実行せず、必ず「すべて展開」してから）
+2. CtmMonitor.exe をダブルクリック
+   → タスクバーに常駐し、レコーダー（ctm.exe）も自動で起動します
+3. 常用するなら、ウィンドウを右クリック →「Windows 起動時に開始」にチェック
+
+動作確認（PowerShell を展開先フォルダで開いて）
+------------------------------------------------
+    .\ctm.exe status
+
+「レコーダー: 稼働中」と本日の記録が出れば成功です。
+※ この zip はフラット構成です。コマンドに bin\ は付けません。
+   （README.md 内の .\bin\ctm.exe という表記はソースからビルドした場合のパスです）
+
+つまずいたら
+------------
+- SmartScreen に止められた
+  → exe を右クリック → プロパティ → 「許可する」にチェック → OK
+- Smart App Control が有効な PC
+  → ダウンロードした未署名 exe は解除できずブロックされます。
+    その場合はソースからビルドしてください（README.md の「ビルドと実行」参照。
+    ローカルビルドした exe は通ることを実機確認済み）
+
+使い方・詳細
+------------
+- 同梱の README.md（機能・コマンド・計測ロジック）
+- リリースページ: https://github.com/GridJapan/gjClaudeTokenMonitor/releases
+- リポジトリ:     https://github.com/GridJapan/gjClaudeTokenMonitor

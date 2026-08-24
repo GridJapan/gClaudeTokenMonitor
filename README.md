@@ -21,15 +21,57 @@ assistant メッセージの `usage` を集計して、トークン数とコス�
  LAST 60 MIN  ___▂▃▁_______▃▁________▂▂█  peak 2.62M/min
 ```
 
-## ビルドと実行
+## インストール（ビルド不要・zip 展開だけ）
+
+**追加インストールは一切不要。** `ctm.exe` は依存ゼロの単一 exe、`CtmMonitor.exe` は
+Windows 10/11 標準搭載の .NET Framework で動く。Go / Git / Python が必要になるのは
+[ソースからビルドする人](#ビルドと実行)だけ。
+
+前提は 2 つ:
+
+- そのPCで **Claude Code を使っている**こと（`~/.claude/projects/` のログを読んで計測する）
+- プラン使用率（%）も見たい場合は、そのPCで `claude` に**ログイン済み**であること
+
+手順:
+
+1. [Releases](https://github.com/GridJapan/gjClaudeTokenMonitor/releases) から `ctm-*-windows-amd64.zip` をダウンロード
+2. 任意のフォルダ（例 `C:\tools\ctm`）に展開（2 つの exe は同じフォルダに置く）
+3. `CtmMonitor.exe` をダブルクリック → レコーダー（ctm.exe）も自動で起動する
+4. 常用するなら右クリック →「**Windows 起動時に開始**」
+
+動作確認（zip はフラット構成なので `bin\` は付けない）:
 
 ```powershell
+.\ctm.exe status     # 「レコーダー: 稼働中」と本日の記録が出れば OK
+```
+
+つまずいたら:
+
+- **SmartScreen に止められた** → exe を右クリック → プロパティ →「許可する」にチェック → OK
+- **Smart App Control が有効な PC** → ダウンロードした未署名 exe は解除不能でブロックされる。
+  [ソースからビルド](#ビルドと実行)すれば通る（ローカルビルド品が通ることは実機確認済み）
+- ATOMS3R サブモニタは **v0.1.0 の zip には未収録**（v0.2 で提供予定。main ブランチでは動く）
+
+## ビルドと実行
+
+ソースから作る場合（zip を使うだけなら不要）。必要なのは Go 1.22+ と Git だけ:
+
+```powershell
+winget install Git.Git GoLang.Go
+```
+
+インストールの**完了を待ってから**（MSI 実行中に叩くと壊れた stdlib エラーになる）、
+**新しいターミナル**を開いて:
+
+```powershell
+git clone https://github.com/GridJapan/gjClaudeTokenMonitor.git
+cd gjClaudeTokenMonitor
 .\build.ps1
 ```
 
 `bin\ctm.exe`（CLI・常駐レコーダー）と `bin\CtmMonitor.exe`（Windows トレイ / タスクバー UI）ができる。
 
-- **ctm.exe**: Go 1.22 以上。標準ライブラリのみ・外部依存ゼロ。クロスビルド可（`GOOS=linux go build -o bin/ctm .`）
+- **ctm.exe**: Go 1.22 以上。標準ライブラリのみ・外部依存ゼロ。クロスビルド可（`$env:GOOS="linux"; go build -o bin/ctm .`）
 - **CtmMonitor.exe**: Windows 標準の `csc.exe`（.NET Framework 4.x）でビルド。ランタイムの追加インストール不要
 
 ```powershell
@@ -132,7 +174,7 @@ sessionId なので、「モニタ起動時に存在しなかったログ」＝�
 `-json` の `by_session`（最終更新の新しい順）からスクリプトで拾ってもよい。
 
 ```powershell
-.\bin\ctm.exe -session 0dd3442d -json | jq .total
+(.\bin\ctm.exe -session 0dd3442d -json | ConvertFrom-Json).total
 ```
 
 **4. すでに開いているセッションを「いまから」測る**
@@ -297,6 +339,9 @@ GET https://api.anthropic.com/api/oauth/usage
 
 ## サブモニタ（ATOMS3R）
 
+> **main ブランチのみの機能**。v0.1.0 の zip には未収録（v0.2 で提供予定）。
+> 使うには[ソースからビルド](#ビルドと実行)すること。
+
 M5Stack **ATOMS3R**（128x128 IPS・BMI270 IMU・USB CDC）を、机上の表示専用サブモニタとして使える。
 PC の CtmMonitor が 200ms ごとに状態 1 行（NDJSON）を USB へ送り、デバイス側が
 **レイアウト 2A**（Big レイアウトの低解像度再構成: 2 層の水槽 + スプリングカウンタ +
@@ -304,7 +349,7 @@ PC の CtmMonitor が 200ms ごとに状態 1 行（NDJSON）を USB へ送り�
 回すと表示が最寄りの 0/90/180/270° へ「ボールが転がるように」ゆっくり追従して回る。
 
 ```powershell
-# ファームウェア書き込み（初回のみ。要 PlatformIO: pip install --user platformio）
+# ファームウェア書き込み（初回のみ。要 Python + PlatformIO: pip install --user platformio）
 pio run -d atom -t upload
 ```
 
@@ -365,7 +410,7 @@ read = 0.1x、write(5m) = 1.25x、write(1h) = 2.0x を掛ける。
 **注意**: 表示されるコストは公開リスト価格ベースの推定値。定額プラン（Pro / Max）では
 実際の請求は発生せず、「もし API 従量課金だったらいくら分か」の目安として読むこと。
 
-## 構成
+## ファイル構成
 
 | ファイル | 役割 |
 |---|---|
