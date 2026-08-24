@@ -18,7 +18,7 @@
 #include <math.h>
 #include "soc/rtc_cntl_reg.h"   // {"flash":1} でダウンロードモードに入るため
 
-static const char *FW_VER = "0.2.0";
+static const char *FW_VER = "0.2.3";
 
 // ---- 画面・色 ------------------------------------------------------------
 static const int W = 128, H = 128;

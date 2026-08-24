@@ -26,5 +26,22 @@ if (Test-Path $csc) {
     Write-Warning "csc.exe が見つからないため CtmMonitor.exe はスキップ"
 }
 
+# ATOM ファームを同梱パック（自動更新・手動書き込み用）。
+# atom を pio run 済みのときだけ。無ければ黙ってスキップ（機能が無効になるだけ）。
+$fwSrc = "$root\atom\.pio\build\atoms3r"
+if (Test-Path "$fwSrc\firmware.bin") {
+    $m = Select-String -Path "$root\atom\src\main.cpp" -Pattern 'FW_VER = "([^"]+)"'
+    if ($m) {
+        $fwVer = $m.Matches[0].Groups[1].Value
+        $fwDst = "$root\bin\atom-fw"
+        New-Item -ItemType Directory -Force -Path $fwDst | Out-Null
+        Copy-Item "$fwSrc\firmware.bin", "$fwSrc\bootloader.bin", "$fwSrc\partitions.bin" $fwDst -Force
+        $b0 = "$env:USERPROFILE\.platformio\packages\framework-arduinoespressif32\tools\partitions\boot_app0.bin"
+        if (Test-Path $b0) { Copy-Item $b0 $fwDst -Force }
+        "{`"ver`": `"$fwVer`"}" | Set-Content "$fwDst\fw.json" -Encoding ascii
+        Write-Host "atom-fw v$fwVer を同梱"
+    }
+}
+
 Write-Host "完了:"
 Get-ChildItem "$root\bin" -Filter *.exe | Format-Table Name, Length, LastWriteTime -AutoSize

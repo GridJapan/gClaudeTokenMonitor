@@ -458,7 +458,7 @@ static class Store
         LogCrash("restart: ctm record を再起動した");
     }
 
-    static void LogCrash(string msg)
+    public static void LogCrash(string msg)
     {
         try
         {
@@ -656,6 +656,341 @@ static class Store
     }
 }
 
+/// <summary>exe に同梱する ATOM ファームウェア一式（bin\atom-fw\）。
+/// build.ps1 が atom のビルド出力と fw.json（バージョン）をここへ詰める。
+/// 無ければ自動更新は静かに無効になるだけで、他機能に影響しない。</summary>
+static class AtomFw
+{
+    public static string Dir
+    {
+        get
+        {
+            return Path.Combine(
+                Path.GetDirectoryName(Application.ExecutablePath) ?? ".", "atom-fw");
+        }
+    }
+
+    public static string App        { get { return Path.Combine(Dir, "firmware.bin"); } }
+    public static string Bootloader { get { return Path.Combine(Dir, "bootloader.bin"); } }
+    public static string Partitions { get { return Path.Combine(Dir, "partitions.bin"); } }
+    public static string BootApp0   { get { return Path.Combine(Dir, "boot_app0.bin"); } }
+
+    /// <summary>fw.json の "ver"。読めなければ null（= 同梱なし）。</summary>
+    public static string Ver
+    {
+        get
+        {
+            try
+            {
+                string j = File.ReadAllText(Path.Combine(Dir, "fw.json"));
+                int i = j.IndexOf("\"ver\"", StringComparison.Ordinal);
+                if (i < 0) return null;
+                i = j.IndexOf('"', j.IndexOf(':', i) + 1);
+                int e = j.IndexOf('"', i + 1);
+                return e > i ? j.Substring(i + 1, e - i - 1) : null;
+            }
+            catch { return null; }
+        }
+    }
+
+    public static bool Available { get { return Ver != null && File.Exists(App); } }
+
+    /// <summary>"0.2.1" 形式の比較。a &lt; b なら負。</summary>
+    public static int Compare(string a, string b)
+    {
+        var pa = (a ?? "").Split('.');
+        var pb = (b ?? "").Split('.');
+        for (int i = 0; i < Math.Max(pa.Length, pb.Length); i++)
+        {
+            int na, nb;
+            int.TryParse(i < pa.Length ? pa[i] : "0", out na);
+            int.TryParse(i < pb.Length ? pb[i] : "0", out nb);
+            if (na != nb) return na - nb;
+        }
+        return 0;
+    }
+}
+
+/// <summary>ESP32-S3 の ROM シリアルブートローダーを直接話す最小クライアント。
+/// esptool を同梱しないための自前実装（依存ゼロ維持）。SLIP フレーミングで
+/// SYNC → SPI_ATTACH → FLASH_BEGIN/DATA/END を送り、SPI_FLASH_MD5 で検証する。
+/// スタブは使わない（platformio.ini の --no-stub と同じ・実機実績のある経路）。
+/// USB-Serial/JTAG では DTR/RTS がチップの BOOT/EN 操作にエミュレートされる。</summary>
+class EspRom : IDisposable
+{
+    [System.Runtime.InteropServices.DllImport("kernel32.dll",
+        CharSet = System.Runtime.InteropServices.CharSet.Auto, SetLastError = true)]
+    static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFile(
+        string name, uint access, uint share, IntPtr sec, uint disp, uint flags, IntPtr tmpl);
+
+    [System.Runtime.InteropServices.StructLayout(
+        System.Runtime.InteropServices.LayoutKind.Sequential)]
+    struct CommTimeouts { public uint RI, RM, RC, WM, WC; }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetCommTimeouts(
+        Microsoft.Win32.SafeHandles.SafeFileHandle h, ref CommTimeouts t);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool EscapeCommFunction(
+        Microsoft.Win32.SafeHandles.SafeFileHandle h, uint fn);
+
+    const uint SETRTS = 3, CLRRTS = 4, SETDTR = 5, CLRDTR = 6;
+
+    Microsoft.Win32.SafeHandles.SafeFileHandle h;
+    FileStream fs;
+
+    public static EspRom Open(string port)
+    {
+        var h = CreateFile("\\\\.\\" + port, 0xC0000000, 0, IntPtr.Zero, 3, 0, IntPtr.Zero);
+        if (h.IsInvalid) return null;
+        var to = new CommTimeouts { RI = 10, RM = 0, RC = 100, WM = 0, WC = 1000 };
+        SetCommTimeouts(h, ref to);
+        return new EspRom { h = h, fs = new FileStream(h, FileAccess.ReadWrite, 4096, false) };
+    }
+
+    public void Dispose()
+    {
+        try { fs.Dispose(); } catch { }
+    }
+
+    void Line(uint fn) { try { EscapeCommFunction(h, fn); } catch { } }
+
+    bool dtrState;
+
+    void SetDtr(bool on) { dtrState = on; Line(on ? SETDTR : CLRDTR); }
+
+    /// <summary>RTS を変えたあと、DTR を同じ値で叩き直す。Windows の usbser.sys は
+    /// RTS 単独ではラインステート要求を送らず、DTR の変化に便乗させないと
+    /// デバイスに届かない（esptool の _setRTS と同じ回避策）。これを省くと
+    /// リセットが一切効かず、チップが ROM モードに残って無反応になる。</summary>
+    void SetRts(bool on)
+    {
+        Line(on ? SETRTS : CLRRTS);
+        Line(dtrState ? SETDTR : CLRDTR);
+    }
+
+    /// <summary>チップをリセットしてアプリを起動させる（書き込み完了後に呼ぶ）。
+    /// esptool の HardReset と同じ: EN を Low にして離す。</summary>
+    public void HardReset()
+    {
+        SetRts(true);                        // EN -> LOW
+        System.Threading.Thread.Sleep(100);
+        SetRts(false);                       // 解除 → アプリが起動する
+        System.Threading.Thread.Sleep(200);
+    }
+
+    /// <summary>USB-Serial/JTAG 経由で ROM ダウンロードモードへ入れる
+    /// （esptool の USBJTAGSerialReset と同一手順）。</summary>
+    public void EnterBootloader()
+    {
+        SetRts(false);
+        SetDtr(false);                       // Idle
+        System.Threading.Thread.Sleep(100);
+        SetDtr(true);                        // IO0 を設定
+        SetRts(false);
+        System.Threading.Thread.Sleep(100);
+        SetRts(true);                        // リセット。(0,0) を避けて (1,1) を通す
+        SetDtr(false);
+        SetRts(true);                        // Windows は RTS 設定時にだけ DTR を伝える
+        System.Threading.Thread.Sleep(100);
+        SetDtr(false);
+        SetRts(false);                       // リセット解除
+    }
+
+    void WriteSlip(byte[] p)
+    {
+        var ms = new MemoryStream(p.Length + 16);
+        ms.WriteByte(0xC0);
+        foreach (var b in p)
+        {
+            if (b == 0xC0) { ms.WriteByte(0xDB); ms.WriteByte(0xDC); }
+            else if (b == 0xDB) { ms.WriteByte(0xDB); ms.WriteByte(0xDD); }
+            else ms.WriteByte(b);
+        }
+        ms.WriteByte(0xC0);
+        var a = ms.ToArray();
+        fs.Write(a, 0, a.Length);
+        fs.Flush();
+    }
+
+    readonly byte[] rxChunk = new byte[512];
+    int rxHave, rxPos;
+
+    // .NET Framework 4.x に TickCount64 は無いので UTC ミリ秒で代用
+    static long NowMs() { return DateTime.UtcNow.Ticks / TimeSpan.TicksPerMillisecond; }
+
+    int NextByte()
+    {
+        if (rxPos >= rxHave)
+        {
+            rxHave = fs.Read(rxChunk, 0, rxChunk.Length);   // COMMTIMEOUTS で ~100ms 上限
+            rxPos = 0;
+            if (rxHave <= 0) return -1;
+        }
+        return rxChunk[rxPos++];
+    }
+
+    byte[] ReadFrame(int timeoutMs)
+    {
+        long deadline = NowMs() + timeoutMs;
+        var frame = new List<byte>(1200);
+        bool inFrame = false, esc = false;
+        while (NowMs() < deadline)
+        {
+            int c = NextByte();
+            if (c < 0) continue;
+            byte b = (byte)c;
+            if (!inFrame)
+            {
+                if (b == 0xC0) { inFrame = true; frame.Clear(); }
+                continue;
+            }
+            if (esc)
+            {
+                frame.Add(b == 0xDC ? (byte)0xC0 : b == 0xDD ? (byte)0xDB : b);
+                esc = false;
+                continue;
+            }
+            if (b == 0xDB) { esc = true; continue; }
+            if (b == 0xC0)
+            {
+                if (frame.Count == 0) continue;   // 連続デリミタは読み流す
+                return frame.ToArray();
+            }
+            frame.Add(b);
+        }
+        return null;
+    }
+
+    public void Drain(int ms)
+    {
+        long deadline = NowMs() + ms;
+        while (NowMs() < deadline) if (NextByte() < 0) break;
+        rxHave = rxPos = 0;
+    }
+
+    byte[] Command(byte op, byte[] payload, uint chk, int timeoutMs)
+    {
+        var req = new byte[8 + payload.Length];
+        req[1] = op;
+        req[2] = (byte)(payload.Length & 0xFF);
+        req[3] = (byte)(payload.Length >> 8);
+        BitConverter.GetBytes(chk).CopyTo(req, 4);
+        payload.CopyTo(req, 8);
+        WriteSlip(req);
+        long deadline = NowMs() + timeoutMs;
+        while (NowMs() < deadline)
+        {
+            var f = ReadFrame((int)Math.Max(1, deadline - NowMs()));
+            if (f == null) return null;
+            if (f.Length < 10 || f[0] != 0x01 || f[1] != op) continue;   // 無関係フレームは捨てる
+            var data = new byte[f.Length - 8];
+            Array.Copy(f, 8, data, 0, data.Length);
+            return data;
+        }
+        return null;
+    }
+
+    static bool Ok(byte[] data)
+    {
+        // 末尾がステータス（S3 ROM は 4 バイト、先頭 0 = 成功）
+        return data != null && data.Length >= 4 && data[data.Length - 4] == 0;
+    }
+
+    public bool Sync()
+    {
+        var p = new byte[36];
+        p[0] = 0x07; p[1] = 0x07; p[2] = 0x12; p[3] = 0x20;
+        for (int i = 4; i < 36; i++) p[i] = 0x55;
+        for (int attempt = 0; attempt < 8; attempt++)
+        {
+            var d = Command(0x08, p, 0, 500);
+            if (d != null) { Drain(300); return true; }
+            System.Threading.Thread.Sleep(100);
+        }
+        return false;
+    }
+
+    public bool SpiAttach()
+    {
+        return Ok(Command(0x0D, new byte[8], 0, 3000));
+    }
+
+    bool FlashBegin(uint size, uint blocks, uint blockSize, uint offset, int timeoutMs)
+    {
+        var p = new byte[20];   // S3 ROM は 5 引数目に encrypted=0
+        BitConverter.GetBytes(size).CopyTo(p, 0);
+        BitConverter.GetBytes(blocks).CopyTo(p, 4);
+        BitConverter.GetBytes(blockSize).CopyTo(p, 8);
+        BitConverter.GetBytes(offset).CopyTo(p, 12);
+        return Ok(Command(0x02, p, 0, timeoutMs));
+    }
+
+    bool FlashData(byte[] block, uint seq)
+    {
+        var p = new byte[16 + block.Length];
+        BitConverter.GetBytes((uint)block.Length).CopyTo(p, 0);
+        BitConverter.GetBytes(seq).CopyTo(p, 4);
+        block.CopyTo(p, 16);
+        uint chk = 0xEF;
+        foreach (var b in block) chk ^= b;
+        return Ok(Command(0x03, p, chk, 6000));
+    }
+
+    string FlashMd5(uint addr, uint size, int timeoutMs)
+    {
+        var p = new byte[16];
+        BitConverter.GetBytes(addr).CopyTo(p, 0);
+        BitConverter.GetBytes(size).CopyTo(p, 4);
+        var d = Command(0x13, p, 0, timeoutMs);
+        if (!Ok(d)) return null;
+        int n = d.Length - 4;
+        if (n >= 32) return Encoding.ASCII.GetString(d, 0, 32).ToLowerInvariant();
+        if (n >= 16)
+        {
+            var sb = new StringBuilder(32);
+            for (int i = 0; i < 16; i++) sb.Append(d[i].ToString("x2"));
+            return sb.ToString();
+        }
+        return null;
+    }
+
+    /// <summary>image を offset へ書き、MD5 で検証する。erase 込み。
+    /// 失敗理由は err に入る（crash.log に出して原因究明に使う）。</summary>
+    public bool WriteRegion(byte[] image, uint offset, Action<int> progress, out string err)
+    {
+        err = "";
+        const uint BS = 0x400;   // ROM ローダーのブロックサイズ
+        uint blocks = (uint)((image.Length + BS - 1) / BS);
+        // FLASH_BEGIN は領域消去を同期で行うので応答が遅い（サイズ比例）
+        if (!FlashBegin((uint)image.Length, blocks, BS, offset, 60000)) { err = "flash_begin 失敗"; return false; }
+        for (uint i = 0; i < blocks; i++)
+        {
+            var b = new byte[BS];
+            int off = (int)(i * BS);
+            int n = Math.Min((int)BS, image.Length - off);
+            Array.Copy(image, off, b, 0, n);
+            for (int k = n; k < (int)BS; k++) b[k] = 0xFF;
+            if (!FlashData(b, i)) { err = "flash_data seq=" + i + " 失敗"; return false; }
+            if (progress != null && (i % 32 == 0 || i == blocks - 1))
+                progress((int)((i + 1) * 100 / blocks));
+        }
+        string want;
+        using (var md5 = System.Security.Cryptography.MD5.Create())
+        {
+            var sb = new StringBuilder(32);
+            foreach (var x in md5.ComputeHash(image)) sb.Append(x.ToString("x2"));
+            want = sb.ToString();
+        }
+        // FLASH_END (0x04) は送らない。esptool も送っておらず（トレースで確認）、
+        // ROM ローダーに投げると失敗が返る。MD5 が一致した時点で書き込みは完了。
+        var got = FlashMd5(offset, (uint)image.Length, 30000);
+        if (got != want) { err = "md5 不一致 got=" + (got ?? "null") + " want=" + want; return false; }
+        return true;
+    }
+}
+
 /// <summary>ATOMS3R サブモニタ（USB CDC・表示専用）への送信。
 /// 200ms ごとの Reload から状態 1 行 (NDJSON) を書くだけで、描画・演出・
 /// 回転はデバイス側 (atom/) が 30fps で行う。接続はバックグラウンドで探す:
@@ -690,6 +1025,34 @@ static class SubMon
     static string pendingSrc = "";
 
     public static string Status = "未接続";
+
+    /// <summary>hello が申告したデバイス側ファームのバージョン。</summary>
+    public static string DeviceFw = "";
+
+    /// <summary>接続中のポート名。メニューからの手動更新で使う。</summary>
+    static string connectedPort = "";
+
+    /// <summary>接続中で、同梱ファームがデバイスより新しい（＝更新できる）か。
+    /// メニューの「ATOM ファームを更新」を出すかの判定に使う。</summary>
+    public static bool UpdateAvailable
+    {
+        get
+        {
+            lock (gate) if (stream == null) return false;
+            return AtomFw.Available && DeviceFw.Length > 0
+                && AtomFw.Compare(DeviceFw, AtomFw.Ver) < 0;
+        }
+    }
+
+    /// <summary>バルーン通知。TrayApp が UI スレッドへマーシャリングして差し込む。</summary>
+    public static Action<string, string, bool> Notify = delegate { };
+
+    /// <summary>書き込みモーダルの制御。TrayApp が実装を差す。
+    /// Begin(タイトル) → Progress(0..100,文言) 多数 → End(成功か)。
+    /// 書き込み中は「ケーブルを抜かないでください」を出し、UI 操作を塞ぐ。</summary>
+    public static Action<string> FlashBegin = delegate { };
+    public static Action<int, string> FlashProgress = delegate { };
+    public static Action<bool, string> FlashEnd = delegate { };
 
     /// <summary>バースト時の発生源ディレクトリ。次の 1 行にだけ載せる。</summary>
     public static void NoteBurst(string src)
@@ -818,7 +1181,18 @@ static class SubMon
                     int n = fs.Read(buf, 0, buf.Length);   // COMMTIMEOUTS で 300ms 上限
                     if (n <= 0) continue;
                     sb.Append(Encoding.ASCII.GetString(buf, 0, n));
-                    if (sb.ToString().Contains("ctm-atom")) return fs;
+                    if (sb.ToString().Contains("ctm-atom"))
+                    {
+                        // hello の "fw":"x.y.z" を控える（自動更新の判定に使う）
+                        var t = sb.ToString();
+                        int i = t.IndexOf("\"fw\":\"", StringComparison.Ordinal);
+                        if (i >= 0)
+                        {
+                            int e = t.IndexOf('"', i + 6);
+                            if (e > i) DeviceFw = t.Substring(i + 6, e - i - 6);
+                        }
+                        return fs;
+                    }
                 }
                 fs.Dispose();
             }
@@ -842,14 +1216,219 @@ static class SubMon
                 var fs = Handshake(name);
                 if (fs != null)
                 {
-                    lock (gate) stream = fs;
-                    Status = "接続中 " + name;
+                    // 接続するだけ。ファーム更新は勝手に行わず、メニューからの
+                    // 明示操作 (UpdateNow) でだけ書き込む。
+                    lock (gate) { stream = fs; connectedPort = name; }
+                    Status = "接続中 " + name + (DeviceFw.Length > 0 ? " (fw " + DeviceFw + ")" : "");
+                    if (UpdateAvailable)
+                        Status += "  ※更新あり v" + AtomFw.Ver;
                     return;
                 }
             }
             Status = "未接続";
         }
         finally { connecting = false; }
+    }
+
+    static volatile bool updating;
+
+    /// <summary>右クリックメニューの「ATOM ファームを更新」から呼ばれる。
+    /// アプリ領域 (0x10000) だけを同梱ファームで書き換える手動更新。勝手には
+    /// 動かない。書き込み全期間、UI に「ケーブルを抜かないでください」モーダルを
+    /// 出す。ROM への入りは esptool と同じ JTAG リセット。</summary>
+    public static void UpdateNow()
+    {
+        if (updating || flashing) return;
+        updating = true;
+        var th = new System.Threading.Thread(delegate ()
+        {
+            string port;
+            lock (gate) port = connectedPort;
+            string fromV = DeviceFw;
+            try
+            {
+                // 送信用の接続を手放す（ROM モードに入れるため）
+                lock (gate) { if (stream != null) { try { stream.Dispose(); } catch { } stream = null; } }
+                System.Threading.Thread.Sleep(400);
+                if (string.IsNullOrEmpty(port))
+                {
+                    var live = new HashSet<string>(SerialPort.GetPortNames());
+                    foreach (var n in CandidatePorts()) if (live.Contains(n)) { port = n; break; }
+                }
+                if (string.IsNullOrEmpty(port))
+                {
+                    Notify("ATOM 更新", "デバイスのポートが見つかりません。", true);
+                    return;
+                }
+                Store.LogCrash("atom: 手動更新 v" + fromV + " -> v" + AtomFw.Ver + " (" + port + ")");
+                FlashBegin("ATOMS3R サブモニタ  ファーム更新  v" + fromV + " → v" + AtomFw.Ver);
+                bool ok = FlashAppRegion(port);
+                Store.LogCrash("atom: 手動更新 " + (ok ? "成功" : "失敗"));
+                if (ok)
+                {
+                    var fs2 = Handshake(port);
+                    if (fs2 != null)
+                    {
+                        lock (gate) { stream = fs2; connectedPort = port; }
+                        Status = "接続中 " + port + " (fw " + DeviceFw + ")";
+                        FlashEnd(true, "v" + DeviceFw + " に更新しました");
+                        Notify("ATOM 更新完了", "v" + DeviceFw + " で再接続しました。", false);
+                    }
+                    else
+                    {
+                        Status = "更新後の再接続待ち";
+                        FlashEnd(true, "v" + AtomFw.Ver + " を書き込みました（再接続待ち）");
+                    }
+                }
+                else
+                {
+                    FlashEnd(false, "書き込みに失敗しました");
+                    Notify("ATOM 更新失敗",
+                        "本体のリセットボタンを約 2 秒長押しして緑 LED（ダウンロードモード）にしてから、" +
+                        "右クリック→「ATOM を更新」で再試行してください。", true);
+                }
+            }
+            finally { updating = false; }
+        });
+        th.IsBackground = true;
+        th.Start();
+    }
+
+    /// <summary>アプリ領域 (0x10000) だけを同梱 firmware.bin で書く。ブートローダー/
+    /// パーティションは触らない（文鎮化リスクを最小化）。失敗理由は crash.log へ。</summary>
+    static bool FlashAppRegion(string port)
+    {
+        byte[] app;
+        try { app = File.ReadAllBytes(AtomFw.App); }
+        catch { Store.LogCrash("atom: firmware.bin を読めない"); return false; }
+
+        try
+        {
+            using (var rom = EnterRom(port))
+            {
+                if (rom == null) { Store.LogCrash("atom: ROM 書き込みモードに入れず"); return false; }
+                Store.LogCrash("atom: ROM 同期 OK");
+                if (!rom.SpiAttach()) { Store.LogCrash("atom: SPI_ATTACH 失敗"); return false; }
+                Store.LogCrash("atom: 書き込み開始 " + app.Length + " bytes");
+                FlashProgress(0, "アプリ領域を書き込み中");
+                string werr;
+                bool ok = rom.WriteRegion(app, 0x10000, p =>
+                {
+                    Status = "FW 書き込み " + p + "%";
+                    FlashProgress(p, "アプリ領域を書き込み中");
+                }, out werr);
+                if (!ok) { Store.LogCrash("atom: 書き込み失敗 " + werr); return false; }
+                Store.LogCrash("atom: 書き込み+検証 OK, リセット");
+                FlashProgress(100, "検証 OK・再起動中");
+                rom.HardReset();
+            }
+        }
+        catch (Exception ex) { Store.LogCrash("atom: 書き込み例外 " + ex.Message); return false; }
+        System.Threading.Thread.Sleep(3000);   // 新ファーム起動待ち
+        return true;
+    }
+
+    /// <summary>ROM ブートローダーと同期する。USB-Serial/JTAG の制御線ダンスで
+    /// 確実にダウンロードモードへ入れてから SYNC する（esptool と同じ経路）。</summary>
+    static EspRom EnterRom(string port)
+    {
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            var rom = EspRom.Open(port);
+            if (rom == null) { System.Threading.Thread.Sleep(1200); continue; }
+            rom.EnterBootloader();                  // JTAG リセット → ROM ダウンロードモード
+            System.Threading.Thread.Sleep(500);
+            if (rom.Sync()) return rom;
+            rom.Dispose();
+            System.Threading.Thread.Sleep(800);
+        }
+        return null;
+    }
+
+    static volatile bool flashing;
+
+    /// <summary>メニューからの手動書き込み（新品/復旧用のフルフラッシュ）。
+    /// 未知のデバイスを勝手に書かないため、これはユーザー操作でだけ動く。</summary>
+    public static void FlashManual()
+    {
+        if (flashing) return;
+        flashing = true;
+        var th = new System.Threading.Thread(delegate ()
+        {
+            try
+            {
+                Shutdown();
+                Status = "手動書き込み中…";
+                var live = new HashSet<string>(SerialPort.GetPortNames());
+                string port = null;
+                foreach (var name in CandidatePorts())
+                    if (live.Contains(name)) { port = name; break; }
+                if (port == null)
+                {
+                    Notify("ATOM 書き込み", "ESP32-S3 (VID_303A) のポートが見つかりません。", true);
+                    Status = "未接続";
+                    return;
+                }
+                Store.LogCrash("atom: 手動フルフラッシュ開始 (" + port + ", v" + AtomFw.Ver + ")");
+                FlashBegin("ファーム書き込み  v" + AtomFw.Ver + "（新品/復旧）");
+                bool ok = false;
+                using (var rom = EnterRom(port))
+                {
+                    if (rom != null && rom.SpiAttach())
+                    {
+                        ok = true;
+                        // パーティション表とアプリだけ。ブートローダー (0x0) は書かない:
+                        // 実機検証では 0x10000 だけで起動でき、0x0 を触ると失敗時に
+                        // 復旧不能になり得るため、触らないのが最も安全。
+                        var plan = new List<KeyValuePair<uint, string>>
+                        {
+                            new KeyValuePair<uint, string>(0x8000,  AtomFw.Partitions),
+                            new KeyValuePair<uint, string>(0xE000,  AtomFw.BootApp0),
+                            new KeyValuePair<uint, string>(0x10000, AtomFw.App),
+                        };
+                        int step = 0;
+                        foreach (var kv in plan)
+                        {
+                            if (!File.Exists(kv.Value)) { step++; continue; }   // boot_app0 は任意
+                            var img = File.ReadAllBytes(kv.Value);
+                            string what = Path.GetFileName(kv.Value);
+                            int baseP = step * 33;
+                            Status = "書き込み " + what;
+                            string werr;
+                            if (!rom.WriteRegion(img, kv.Key, p =>
+                                {
+                                    Status = what + " " + p + "%";
+                                    FlashProgress(Math.Min(99, baseP + p / 3), what + " を書き込み中");
+                                }, out werr))
+                            {
+                                Store.LogCrash("atom: " + what + " " + werr);
+                                ok = false;
+                                break;
+                            }
+                            step++;
+                        }
+                        if (ok) { FlashProgress(100, "検証 OK・再起動中"); rom.HardReset(); }
+                    }
+                }
+                Store.LogCrash("atom: 手動フルフラッシュ " + (ok ? "成功" : "失敗"));
+                if (ok)
+                {
+                    FlashEnd(true, "v" + AtomFw.Ver + " を書き込みました");
+                    Notify("ATOM 書き込み完了", "v" + AtomFw.Ver + " を書き込みました。数秒で表示が始まります。", false);
+                    Status = "再接続待ち";
+                }
+                else
+                {
+                    FlashEnd(false, "書き込みに失敗しました");
+                    Notify("ATOM 書き込み失敗",
+                        "本体のリセットボタンを約 2 秒長押しして緑 LED（ダウンロードモード）にしてから、もう一度実行してください。", true);
+                    Status = "書き込み失敗";
+                }
+            }
+            finally { flashing = false; }
+        });
+        th.IsBackground = true;
+        th.Start();
     }
 
     public static void Shutdown()
@@ -1010,9 +1589,44 @@ class CompactForm : Form
             Store.SaveSettings();
         };
         menu.Items.Add(atomItem);
+        // 更新できるとき（接続中＆デバイスが同梱より古い）だけ出す。押すと書き込む。
+        var atomUpdate = new ToolStripMenuItem("ATOM ファームを更新");
+        atomUpdate.Click += delegate
+        {
+            var r = MessageBox.Show(
+                "ATOMS3R サブモニタのファームを v" + SubMon.DeviceFw +
+                " から v" + AtomFw.Ver + " に更新します。\n\n" +
+                "書き込み中は USB ケーブルを抜かないでください（数十秒）。\n実行しますか？",
+                "gClaudeTokenMonitor", MessageBoxButtons.OKCancel, MessageBoxIcon.Information);
+            if (r == DialogResult.OK) SubMon.UpdateNow();
+        };
+        menu.Items.Add(atomUpdate);
+        var atomFlash = new ToolStripMenuItem("ATOM にファームを書き込む（新品/復旧）");
+        atomFlash.Click += delegate
+        {
+            if (!AtomFw.Available)
+            {
+                MessageBox.Show(
+                    "同梱ファームが見つかりません（bin\\atom-fw\\）。\n" +
+                    "pio run -d atom でビルドしてから build.ps1 を実行してください。",
+                    "gClaudeTokenMonitor");
+                return;
+            }
+            var r = MessageBox.Show(
+                "接続中の ESP32-S3 (ATOMS3R) にファーム v" + AtomFw.Ver + " を書き込みます。\n" +
+                "新品や無反応の個体は、本体のリセットボタンを約 2 秒長押しして\n" +
+                "緑 LED（ダウンロードモード）にしてから OK を押してください。\n\n" +
+                "実行しますか？",
+                "gClaudeTokenMonitor", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
+            if (r == DialogResult.OK) SubMon.FlashManual();
+        };
+        menu.Items.Add(atomFlash);
         menu.Opening += delegate
         {
             atomItem.Text = "サブモニタ (ATOM)  ―  " + SubMon.Status;
+            atomUpdate.Visible = SubMon.UpdateAvailable;
+            atomUpdate.Text = "ATOM ファームを更新  (v" + SubMon.DeviceFw + " → v" + AtomFw.Ver + ")";
+            atomFlash.Enabled = AtomFw.Available;
         };
 
         // Windows 起動時に自動開始（このマシンでの自分の絶対パスで登録するので、
@@ -2431,6 +3045,159 @@ class InstrDetailForm : Form
     }
 }
 
+/// <summary>ファーム書き込み中の全画面級モーダル。書き込みの間ずっと最前面に居座り、
+/// 「ケーブルを抜かないでください」を大きく出し、× もタスクからも閉じられない。
+/// 完了/失敗で初めて閉じられる（成功は自動で閉じる）。UI スレッドで動かす。</summary>
+class FlashForm : Form
+{
+    readonly Label title = new Label();
+    readonly Label warn = new Label();
+    readonly Label sub = new Label();
+    readonly Panel barBg = new Panel();
+    readonly Panel bar = new Panel();
+    readonly Button close = new Button();
+    bool done;              // 完了/失敗して閉じてよい状態
+    int pulse;
+    readonly Timer blink = new Timer();
+
+    public FlashForm()
+    {
+        FormBorderStyle = FormBorderStyle.None;
+        StartPosition = FormStartPosition.CenterScreen;
+        Size = new Size(560, 320);
+        BackColor = Color.FromArgb(16, 15, 20);
+        TopMost = true;
+        ShowInTaskbar = false;
+        ControlBox = false;
+        DoubleBuffered = true;
+
+        var accent = new Panel { Dock = DockStyle.Top, Height = 6, BackColor = Theme.Warn };
+        Controls.Add(accent);
+
+        // 何の話か一目で分かるよう、対象デバイスを常に出す（heading で消さない）
+        var device = new Label
+        {
+            Text = "🔌  ATOMS3R サブモニタ（USB 接続の小型ディスプレイ）",
+            ForeColor = Theme.Accent,
+            Font = new Font("Segoe UI", 10.5f, FontStyle.Bold),
+        };
+        device.SetBounds(36, 22, 488, 24);
+        Controls.Add(device);
+
+        title.Text = "ファーム書き込み中";
+        title.ForeColor = Theme.Fg;
+        title.Font = new Font("Segoe UI", 15f, FontStyle.Bold);
+        title.SetBounds(36, 48, 488, 32);
+        Controls.Add(title);
+
+        warn.Text = "⚠  ATOMS3R の USB ケーブルを抜かないでください";
+        warn.ForeColor = Theme.Warn;
+        warn.Font = new Font("Segoe UI", 15f, FontStyle.Bold);
+        warn.TextAlign = ContentAlignment.MiddleCenter;
+        warn.SetBounds(20, 100, 520, 44);
+        Controls.Add(warn);
+
+        var expl = new Label
+        {
+            Text = "書き込み中に接続を切ると、ATOMS3R が起動しなくなることがあります。\n"
+                 + "完了メッセージが出るまで、ケーブルも本体もそのままにしてください。",
+            ForeColor = Theme.Mut,
+            Font = new Font("Segoe UI", 9.5f),
+            TextAlign = ContentAlignment.MiddleCenter,
+        };
+        expl.SetBounds(30, 148, 500, 44);
+        Controls.Add(expl);
+
+        barBg.SetBounds(36, 206, 488, 16);
+        barBg.BackColor = Theme.Line;
+        Controls.Add(barBg);
+        bar.SetBounds(0, 0, 0, 16);
+        bar.BackColor = Theme.Ok;
+        barBg.Controls.Add(bar);
+
+        sub.Text = "準備中…";
+        sub.ForeColor = Theme.Mut;
+        sub.Font = new Font("Consolas", 9.5f);
+        sub.SetBounds(36, 230, 488, 24);
+        Controls.Add(sub);
+
+        close.Text = "閉じる";
+        close.SetBounds(232, 262, 96, 34);
+        close.FlatStyle = FlatStyle.Flat;
+        close.ForeColor = Theme.Fg;
+        close.BackColor = Theme.Card;
+        close.Visible = false;
+        close.Click += delegate { Hide(); };
+        Controls.Add(close);
+
+        blink.Interval = 500;
+        blink.Tick += delegate
+        {
+            if (done) return;
+            pulse ^= 1;
+            warn.ForeColor = pulse == 0 ? Theme.Warn : Color.FromArgb(255, 210, 150);
+        };
+        blink.Start();
+    }
+
+    // 書き込み中は一切閉じさせない（Alt+F4・タスク終了・× すべて拒否）。
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        if (!done && e.CloseReason != CloseReason.ApplicationExitCall)
+        {
+            e.Cancel = true;
+            return;
+        }
+        base.OnFormClosing(e);
+    }
+
+    const int CP_NOCLOSE_BUTTON = 0x200;
+    protected override CreateParams CreateParams
+    {
+        get { var cp = base.CreateParams; cp.ClassStyle |= CP_NOCLOSE_BUTTON; return cp; }
+    }
+
+    public void Start(string heading)
+    {
+        done = false;
+        title.Text = heading;
+        warn.Visible = true;
+        close.Visible = false;
+        SetProgress(0, "書き込みモードに入っています…");
+        blink.Start();
+        if (!Visible) Show();
+        BringToFront();
+        Activate();
+    }
+
+    public void SetProgress(int pct, string text)
+    {
+        pct = Math.Max(0, Math.Min(100, pct));
+        bar.Width = (int)(barBg.ClientSize.Width * (pct / 100.0));
+        sub.Text = text + "   " + pct + "%";
+    }
+
+    public void Finish(bool ok, string text)
+    {
+        done = true;
+        blink.Stop();
+        warn.Visible = false;
+        title.Text = ok ? "書き込み完了" : "書き込み失敗";
+        bar.BackColor = ok ? Theme.Ok : Theme.Bad;
+        if (ok) bar.Width = barBg.ClientSize.Width;
+        sub.ForeColor = ok ? Theme.Ok : Theme.Bad;
+        sub.Text = (ok ? "✓ " : "✕ ") + text
+                 + (ok ? "  — 抜いて構いません" : "  — ケーブルを抜いて、挿し直してください");
+        close.Visible = true;
+        if (ok)
+        {
+            var t = new Timer { Interval = 2500 };
+            t.Tick += delegate { t.Stop(); if (Visible) Hide(); };
+            t.Start();
+        }
+    }
+}
+
 class TrayApp : ApplicationContext
 {
     readonly NotifyIcon icon = new NotifyIcon();
@@ -2465,6 +3232,35 @@ class TrayApp : ApplicationContext
         compact.PlaceBottomRight();
         compact.Show();
 
+        // ATOM のファーム更新など、バックグラウンドスレッドからの通知を UI で出す
+        SubMon.Notify = delegate (string title, string msg, bool err)
+        {
+            try
+            {
+                compact.BeginInvoke((Action)delegate
+                {
+                    icon.ShowBalloonTip(8000, title, msg,
+                        err ? ToolTipIcon.Error : ToolTipIcon.Info);
+                });
+            }
+            catch { }
+        };
+
+        // ファーム書き込み中モーダル（「ケーブルを抜かないでください」）。
+        // SubMon の書き込みスレッドから呼ばれるので UI スレッドへ渡す。
+        SubMon.FlashBegin = delegate (string heading)
+        {
+            try { compact.BeginInvoke((Action)delegate { FlashUi().Start(heading); }); } catch { }
+        };
+        SubMon.FlashProgress = delegate (int pct, string text)
+        {
+            try { compact.BeginInvoke((Action)delegate { FlashUi().SetProgress(pct, text); }); } catch { }
+        };
+        SubMon.FlashEnd = delegate (bool ok, string text)
+        {
+            try { compact.BeginInvoke((Action)delegate { FlashUi().Finish(ok, text); }); } catch { }
+        };
+
         // 記録が止まっていれば起こす。直後に Supervise が誤検知で殺さないよう印を付ける
         if (!Store.RecorderAlive())
         {
@@ -2479,6 +3275,13 @@ class TrayApp : ApplicationContext
     }
 
     void Toggle() { compact.Toggle(); }
+
+    FlashForm flashForm;
+    FlashForm FlashUi()
+    {
+        if (flashForm == null || flashForm.IsDisposed) flashForm = new FlashForm();
+        return flashForm;
+    }
 
     bool startErrorShown;
 
